@@ -50,7 +50,7 @@ help:
 	@echo "             SUDO_PASSWORD=...         Preload sudo credential for setup flow"
 	@echo ""
 	@echo "Setup (one-time):"
-	@echo "  make setup_tools             Install all tools (brew, trustcache, insert_dylib, libimobiledevice, venv)"
+	@echo "  make setup_tools             Install host tools (brew, trustcache, insert_dylib)"
 	@echo ""
 	@echo "Build:"
 	@echo "  make build                   Build + sign vphone-cli"
@@ -113,8 +113,8 @@ setup_machine:
 		$(if $(filter 1 true yes YES TRUE,$(DEV)),--dev,) \
 		$(if $(filter 1 true yes YES TRUE,$(SKIP_PROJECT_SETUP)),--skip-project-setup,)
 
-setup_tools:
-	zsh $(SCRIPTS)/setup_tools.sh
+setup_tools: patcher_build
+	"$(CURDIR)/$(PATCHER_BINARY)" setup-tools --project-root "$(CURDIR)"
 
 # ═══════════════════════════════════════════════════════════════════
 # Clean — remove all untracked/ignored files (preserves IPSWs only)

@@ -45,6 +45,9 @@ struct VPhoneMain {
             case var command as SendRamdiskCLI:
                 try await command.run()
 
+            case var command as SetupToolsCLI:
+                try await command.run()
+
             case var command as CFWCryptexPathsCLI:
                 try command.run()
 
