@@ -12,6 +12,10 @@ struct VPhoneMain {
 
         do {
             let command = try VPhoneCLI.parseAsRoot()
+            if let helpType = requestedHelpType(arguments: CommandLine.arguments) {
+                print(helpMessage(for: helpType))
+                return
+            }
 
             switch command {
             case let boot as VPhoneBootCLI:
@@ -101,5 +105,33 @@ struct VPhoneMain {
         } catch {
             VPhoneCLI.exit(withError: error)
         }
+    }
+
+    static func requestedHelpType(arguments: [String]) -> ParsableCommand.Type? {
+        var commandArguments = Array(arguments.dropFirst())
+        if commandArguments.isEmpty {
+            return nil
+        }
+        if commandArguments.first == "help" {
+            commandArguments.removeFirst()
+        } else if !commandArguments.contains("--help"), !commandArguments.contains("-h") {
+            return nil
+        }
+
+        commandArguments.removeAll { $0 == "--help" || $0 == "-h" }
+        guard let first = commandArguments.first, !first.hasPrefix("-") else {
+            return VPhoneCLI.self
+        }
+
+        return VPhoneCLI.configuration.subcommands.first {
+            $0.configuration.commandName == first
+        } ?? VPhoneCLI.self
+    }
+
+    static func helpMessage(for commandType: ParsableCommand.Type) -> String {
+        if commandType == VPhoneCLI.self {
+            return VPhoneCLI.helpMessage()
+        }
+        return VPhoneCLI.helpMessage(for: commandType)
     }
 }
