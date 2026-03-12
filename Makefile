@@ -4,12 +4,19 @@
 
 # ─── Configuration (override with make VAR=value) ─────────────────
 VM_DIR      ?= vm
-CPU         ?= 8          # CPU cores (only used during vm_new)
-MEMORY      ?= 8192       # Memory in MB (only used during vm_new)
-DISK_SIZE   ?= 64         # Disk size in GB (only used during vm_new)
-RESTORE_UDID ?=           # UDID for restore operations
-RESTORE_ECID ?=           # ECID for restore operations
-RAMDISK_ECID ?=           # ECID for ramdisk transport operations
+CPU         ?= 8
+MEMORY      ?= 8192
+DISK_SIZE   ?= 64
+RESTORE_UDID ?=
+RESTORE_ECID ?=
+RAMDISK_ECID ?=
+SETUP_VARIANT := $(if $(filter 1 true yes YES TRUE,$(JB)),$(if $(filter 1 true yes YES TRUE,$(DEV)),invalid,jb),$(if $(filter 1 true yes YES TRUE,$(DEV)),dev,regular))
+
+ifneq ($(filter 1 true yes YES TRUE,$(JB)),)
+ifneq ($(filter 1 true yes YES TRUE,$(DEV)),)
+$(error JB=1 and DEV=1 are mutually exclusive)
+endif
+endif
 
 # ─── Build info ──────────────────────────────────────────────────
 GIT_HASH    := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -40,6 +47,11 @@ help:
 	@echo "  make setup_machine                   Full setup through First Boot"
 	@echo "    Options: JB=1                      Jailbreak firmware/CFW path"
 	@echo "             DEV=1                     Dev firmware/CFW path (dev TXM + cfw_install_dev)"
+	@echo "             CPU=8 MEMORY=8192         VM sizing passed to vm-create"
+	@echo "             DISK_SIZE=64              VM disk size in GB"
+	@echo "             IPHONE_SOURCE=...         Override iPhone IPSW URL/path"
+	@echo "             CLOUDOS_SOURCE=...        Override cloudOS IPSW URL/path"
+	@echo "             IPSW_DIR=...              Override IPSW cache directory"
 	@echo "             SKIP_PROJECT_SETUP=1      Skip setup_tools/build"
 	@echo "             NONE_INTERACTIVE=1        Auto-continue prompts + boot analysis"
 	@echo "             SUDO_PASSWORD=...         Preload sudo credential for setup flow"
@@ -97,17 +109,21 @@ help:
 .PHONY: setup_machine setup_tools
 
 setup_machine:
-	@if [ "$(filter 1 true yes YES TRUE,$(JB))" != "" ] && [ "$(filter 1 true yes YES TRUE,$(DEV))" != "" ]; then \
-		echo "Error: JB=1 and DEV=1 are mutually exclusive"; \
-		exit 1; \
-	fi
-	VM_DIR="$(VM_DIR)" \
-	JB="$(JB)" \
-	DEV="$(DEV)" \
-	SKIP_PROJECT_SETUP="$(SKIP_PROJECT_SETUP)" \
-	NONE_INTERACTIVE="$(NONE_INTERACTIVE)" \
-	SUDO_PASSWORD="$(SUDO_PASSWORD)" \
-	"$(CURDIR)/$(PATCHER_BINARY)" setup-machine --project-root "$(CURDIR)"
+	"$(CURDIR)/$(PATCHER_BINARY)" setup-machine \
+		--project-root "$(CURDIR)" \
+		--vm-directory "$(VM_DIR)" \
+		--cpu "$(CPU)" \
+		--memory "$(MEMORY)" \
+		--disk-size "$(DISK_SIZE)" \
+		--variant "$(SETUP_VARIANT)" \
+		$(if $(IPHONE_DEVICE),--iphone-device "$(IPHONE_DEVICE)") \
+		$(if $(IPHONE_VERSION),--iphone-version "$(IPHONE_VERSION)") \
+		$(if $(IPHONE_BUILD),--iphone-build "$(IPHONE_BUILD)") \
+		$(if $(IPHONE_SOURCE),--iphone-source "$(IPHONE_SOURCE)") \
+		$(if $(CLOUDOS_SOURCE),--cloudos-source "$(CLOUDOS_SOURCE)") \
+		$(if $(IPSW_DIR),--ipsw-dir "$(IPSW_DIR)") \
+		$(if $(filter 1 true yes YES TRUE,$(SKIP_PROJECT_SETUP)),--skip-project-setup) \
+		$(if $(filter 1 true yes YES TRUE,$(NONE_INTERACTIVE)),--non-interactive)
 
 setup_tools: patcher_build
 	"$(CURDIR)/$(PATCHER_BINARY)" setup-tools --project-root "$(CURDIR)"
@@ -158,17 +174,10 @@ bundle: build setup_tools $(INFO_PLIST)
 	@codesign --force --sign - --entitlements $(ENTITLEMENTS) $(BUNDLE_BIN)
 	@echo "  bundled → $(BUNDLE)"
 
-# Cross-compile + sign vphoned daemon for iOS arm64 (requires vendored ldid)
+# Cross-compile + sign vphoned daemon for iOS arm64 via Swift CLI
 .PHONY: vphoned
-vphoned: setup_tools
-	$(MAKE) -C $(SCRIPTS)/vphoned GIT_HASH=$(GIT_HASH)
-	@echo "=== Signing vphoned ==="
-	cp $(SCRIPTS)/vphoned/vphoned $(VM_DIR)/.vphoned.signed
-	"$(CURDIR)/$(TOOLS_PREFIX)/bin/ldid" \
-		-S$(SCRIPTS)/vphoned/entitlements.plist \
-		-M "-K$(SCRIPTS)/vphoned/signcert.p12" \
-		$(VM_DIR)/.vphoned.signed
-	@echo "  signed → $(VM_DIR)/.vphoned.signed"
+vphoned: patcher_build setup_tools
+	"$(CURDIR)/$(PATCHER_BINARY)" build-vphoned --project-root "$(CURDIR)" --vm-directory "$(VM_DIR_ABS)"
 
 # ═══════════════════════════════════════════════════════════════════
 # VM management
@@ -190,32 +199,15 @@ boot_host_preflight: build patcher_build
 	"$(CURDIR)/$(PATCHER_BINARY)" boot-host-preflight --project-root "$(CURDIR)"
 
 boot_binary_check: $(BINARY) patcher_build
-	@"$(CURDIR)/$(PATCHER_BINARY)" boot-host-preflight --project-root "$(CURDIR)" --assert-bootable
-	@tmp_log="$$(mktemp -t vphone-boot-preflight.XXXXXX)"; \
-	set +e; \
-	"$(CURDIR)/$(BINARY)" --help >"$$tmp_log" 2>&1; \
-	rc=$$?; \
-	set -e; \
-	if [ $$rc -ne 0 ]; then \
-		echo "Error: signed vphone-cli failed to launch (exit $$rc)." >&2; \
-		echo "Check private virtualization entitlement support and ensure SIP/AMFI are disabled on the host." >&2; \
-		echo "Repo workaround: start the AMFI bypass helper with 'make amfidont_allow_vphone' and retry." >&2; \
-		if [ -s "$$tmp_log" ]; then \
-			echo "--- vphone-cli preflight log ---" >&2; \
-			tail -n 40 "$$tmp_log" >&2; \
-		fi; \
-		rm -f "$$tmp_log"; \
-		exit $$rc; \
-	fi; \
-	rm -f "$$tmp_log"
+	"$(CURDIR)/$(PATCHER_BINARY)" boot-host-preflight --project-root "$(CURDIR)" --assert-bootable
 
 boot: bundle vphoned boot_binary_check
-	cd $(VM_DIR) && "$(CURDIR)/$(BUNDLE_BIN)" \
-		--config ./config.plist
+	"$(CURDIR)/$(BUNDLE_BIN)" \
+		--config "$(VM_DIR_ABS)/config.plist"
 
 boot_dfu: build boot_binary_check
-	cd $(VM_DIR) && "$(CURDIR)/$(BINARY)" \
-		--config ./config.plist \
+	"$(CURDIR)/$(BINARY)" \
+		--config "$(VM_DIR_ABS)/config.plist" \
 		--dfu
 
 # ═══════════════════════════════════════════════════════════════════
@@ -225,15 +217,16 @@ boot_dfu: build boot_binary_check
 .PHONY: fw_prepare fw_patch fw_patch_dev fw_patch_jb
 
 fw_prepare: patcher_build
-	cd $(VM_DIR) && \
-		LIST_FIRMWARES="$(LIST_FIRMWARES)" \
-		IPHONE_DEVICE="$(IPHONE_DEVICE)" \
-		IPHONE_VERSION="$(IPHONE_VERSION)" \
-		IPHONE_BUILD="$(IPHONE_BUILD)" \
-		IPHONE_SOURCE="$(IPHONE_SOURCE)" \
-		CLOUDOS_SOURCE="$(CLOUDOS_SOURCE)" \
-		IPSW_DIR="$(IPSW_DIR)" \
-		"$(CURDIR)/$(PATCHER_BINARY)" prepare-firmware --project-root "$(CURDIR)"
+	"$(CURDIR)/$(PATCHER_BINARY)" prepare-firmware \
+		--project-root "$(CURDIR)" \
+		--output-dir "$(VM_DIR_ABS)" \
+		$(if $(filter 1 true yes YES TRUE,$(LIST_FIRMWARES)),--list) \
+		$(if $(IPHONE_DEVICE),--device "$(IPHONE_DEVICE)") \
+		$(if $(IPHONE_VERSION),--version "$(IPHONE_VERSION)") \
+		$(if $(IPHONE_BUILD),--build "$(IPHONE_BUILD)") \
+		$(if $(IPHONE_SOURCE),--iphone-source "$(IPHONE_SOURCE)") \
+		$(if $(CLOUDOS_SOURCE),--cloudos-source "$(CLOUDOS_SOURCE)") \
+		$(if $(IPSW_DIR),--ipsw-dir "$(IPSW_DIR)")
 
 fw_patch: patcher_build
 	"$(CURDIR)/$(PATCHER_BINARY)" patch-firmware --vm-directory "$(VM_DIR_ABS)" --variant regular
@@ -251,16 +244,14 @@ fw_patch_jb: patcher_build
 .PHONY: restore_get_shsh restore
 
 restore_get_shsh: patcher_build
-	cd $(VM_DIR) && \
-		RESTORE_UDID="$(RESTORE_UDID)" \
-		RESTORE_ECID="$(RESTORE_ECID)" \
-		"$(CURDIR)/$(PATCHER_BINARY)" restore-get-shsh .
+	"$(CURDIR)/$(PATCHER_BINARY)" restore-get-shsh "$(VM_DIR_ABS)" \
+		$(if $(RESTORE_UDID),--udid "$(RESTORE_UDID)") \
+		$(if $(RESTORE_ECID),--ecid "$(RESTORE_ECID)")
 
 restore: patcher_build
-	cd $(VM_DIR) && \
-		RESTORE_UDID="$(RESTORE_UDID)" \
-		RESTORE_ECID="$(RESTORE_ECID)" \
-		"$(CURDIR)/$(PATCHER_BINARY)" restore-device .
+	"$(CURDIR)/$(PATCHER_BINARY)" restore-device "$(VM_DIR_ABS)" \
+		$(if $(RESTORE_UDID),--udid "$(RESTORE_UDID)") \
+		$(if $(RESTORE_ECID),--ecid "$(RESTORE_ECID)")
 
 # ═══════════════════════════════════════════════════════════════════
 # Ramdisk
@@ -269,14 +260,13 @@ restore: patcher_build
 .PHONY: ramdisk_build ramdisk_send
 
 ramdisk_build: patcher_build
-	cd $(VM_DIR) && RAMDISK_UDID="$(RAMDISK_UDID)" "$(CURDIR)/$(PATCHER_BINARY)" build-ramdisk .
+	"$(CURDIR)/$(PATCHER_BINARY)" build-ramdisk "$(VM_DIR_ABS)"
 
 ramdisk_send:
-	cd $(VM_DIR) && \
-		RAMDISK_ECID="$(RAMDISK_ECID)" \
-		RAMDISK_UDID="$(RAMDISK_UDID)" \
-		RESTORE_UDID="$(RESTORE_UDID)" \
-		"$(CURDIR)/$(PATCHER_BINARY)" send-ramdisk
+	"$(CURDIR)/$(PATCHER_BINARY)" send-ramdisk \
+		--ramdisk-dir "$(VM_DIR_ABS)/Ramdisk" \
+		$(if $(RAMDISK_UDID),--udid "$(RAMDISK_UDID)",$(if $(RESTORE_UDID),--udid "$(RESTORE_UDID)")) \
+		$(if $(RAMDISK_ECID),--ecid "$(RAMDISK_ECID)")
 
 # ═══════════════════════════════════════════════════════════════════
 # CFW
@@ -285,10 +275,10 @@ ramdisk_send:
 .PHONY: cfw_install cfw_install_dev cfw_install_jb
 
 cfw_install: patcher_build
-	cd $(VM_DIR) && $(if $(SSH_PORT),SSH_PORT="$(SSH_PORT)") "$(CURDIR)/$(PATCHER_BINARY)" cfw-install . --project-root "$(CURDIR)" --variant regular
+	"$(CURDIR)/$(PATCHER_BINARY)" cfw-install "$(VM_DIR_ABS)" --project-root "$(CURDIR)" --variant regular $(if $(SSH_PORT),--ssh-port "$(SSH_PORT)")
 
 cfw_install_dev: patcher_build
-	cd $(VM_DIR) && $(if $(SSH_PORT),SSH_PORT="$(SSH_PORT)") "$(CURDIR)/$(PATCHER_BINARY)" cfw-install . --project-root "$(CURDIR)" --variant dev
+	"$(CURDIR)/$(PATCHER_BINARY)" cfw-install "$(VM_DIR_ABS)" --project-root "$(CURDIR)" --variant dev $(if $(SSH_PORT),--ssh-port "$(SSH_PORT)")
 
 cfw_install_jb: patcher_build
-	cd $(VM_DIR) && $(if $(SSH_PORT),SSH_PORT="$(SSH_PORT)") "$(CURDIR)/$(PATCHER_BINARY)" cfw-install . --project-root "$(CURDIR)" --variant jb
+	"$(CURDIR)/$(PATCHER_BINARY)" cfw-install "$(VM_DIR_ABS)" --project-root "$(CURDIR)" --variant jb $(if $(SSH_PORT),--ssh-port "$(SSH_PORT)")

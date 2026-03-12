@@ -20,6 +20,7 @@ struct VPhoneCLI: ParsableCommand {
             SendRamdiskCLI.self,
             SetupToolsCLI.self,
             SetupMachineCLI.self,
+            BuildVphonedCLI.self,
             CFWInstallCLI.self,
             USBMuxListCLI.self,
             USBMuxForwardCLI.self,

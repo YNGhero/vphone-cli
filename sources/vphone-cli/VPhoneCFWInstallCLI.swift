@@ -542,13 +542,15 @@ private struct VPhoneCFWInstaller {
     }
 
     func buildAndInstallVphoned() async throws {
-        let sourceDirectory = scriptDirectory.appendingPathComponent("vphoned", isDirectory: true)
-        _ = try await VPhoneHost.runCommand("make", arguments: ["-C", sourceDirectory.path, "GIT_HASH=\(try await currentGitHash())"], requireSuccess: true)
-        let builtBinary = sourceDirectory.appendingPathComponent("vphoned")
+        let builder = VphonedBuilder(projectRoot: projectRoot)
+        let builtBinary = try await builder.build(
+            signedCopyURL: nil,
+            gitHash: try await builder.currentGitHash()
+        ).binaryURL
         let localBinary = temporaryDirectory.appendingPathComponent("vphoned")
         try? FileManager.default.removeItem(at: localBinary)
         try FileManager.default.copyItem(at: builtBinary, to: localBinary)
-        try await ldidSign(localBinary, entitlements: sourceDirectory.appendingPathComponent("entitlements.plist"), bundleID: nil)
+        try await ldidSign(localBinary, entitlements: builder.entitlementsURL, bundleID: nil)
         try await scpTo(localBinary.path, remotePath: "/mnt1/usr/bin/vphoned")
         _ = try await ssh("/bin/chmod 0755 /mnt1/usr/bin/vphoned")
 
@@ -557,12 +559,6 @@ private struct VPhoneCFWInstaller {
             try FileManager.default.removeItem(at: signedCopy)
         }
         try FileManager.default.copyItem(at: localBinary, to: signedCopy)
-    }
-
-    func currentGitHash() async throws -> String {
-        let result = try await VPhoneHost.runCommand("git", arguments: ["-C", projectRoot.path, "rev-parse", "--short", "HEAD"], requireSuccess: false)
-        let hash = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        return hash.isEmpty ? "unknown" : hash
     }
 
     func ldidSign(_ binaryURL: URL, entitlements: URL? = nil, bundleID: String?) async throws {

@@ -36,6 +36,9 @@ struct PrepareFirmwareCLI: AsyncParsableCommand {
     @Option(name: .customLong("project-root"), help: "Repository root path.", transform: URL.init(fileURLWithPath:))
     var projectRoot: URL = VPhoneHost.currentDirectoryURL()
 
+    @Option(name: .customLong("output-dir"), help: "Directory where extracted restore trees will be created.", transform: URL.init(fileURLWithPath:))
+    var outputDirectory: URL?
+
     @Argument(help: "Optional positional iPhone source/version/build selector.")
     var positionalIPhone: String?
 
@@ -44,7 +47,7 @@ struct PrepareFirmwareCLI: AsyncParsableCommand {
 
     mutating func run() async throws {
         let env = ProcessInfo.processInfo.environment
-        let workingDirectory = VPhoneHost.currentDirectoryURL()
+        let workingDirectory = (outputDirectory ?? VPhoneHost.currentDirectoryURL()).standardizedFileURL
         let readmeURL = projectRoot.appendingPathComponent("README.md")
 
         let list = listFirmwares || env["LIST_FIRMWARES"] == "1"

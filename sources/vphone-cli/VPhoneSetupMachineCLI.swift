@@ -20,6 +20,33 @@ struct SetupMachineCLI: AsyncParsableCommand {
     @Option(help: "VM directory")
     var vmDirectory: String = ProcessInfo.processInfo.environment["VM_DIR"] ?? "vm"
 
+    @Option(help: "CPU core count for vm-create")
+    var cpu: Int = Int(ProcessInfo.processInfo.environment["CPU"] ?? "8") ?? 8
+
+    @Option(help: "Memory size in MB for vm-create")
+    var memory: Int = Int(ProcessInfo.processInfo.environment["MEMORY"] ?? "8192") ?? 8192
+
+    @Option(name: .customLong("disk-size"), help: "Disk size in GB for vm-create")
+    var diskSize: Int = Int(ProcessInfo.processInfo.environment["DISK_SIZE"] ?? "64") ?? 64
+
+    @Option(name: .customLong("iphone-device"), help: "Device identifier passed to prepare-firmware")
+    var iPhoneDevice: String?
+
+    @Option(name: .customLong("iphone-version"), help: "Version selector passed to prepare-firmware")
+    var iPhoneVersion: String?
+
+    @Option(name: .customLong("iphone-build"), help: "Build selector passed to prepare-firmware")
+    var iPhoneBuild: String?
+
+    @Option(name: .customLong("iphone-source"), help: "Direct iPhone IPSW URL or local path passed to prepare-firmware")
+    var iPhoneSource: String?
+
+    @Option(name: .customLong("cloudos-source"), help: "Direct cloudOS IPSW URL or local path passed to prepare-firmware")
+    var cloudOSSource: String?
+
+    @Option(name: .customLong("ipsw-dir"), help: "IPSW cache directory passed to prepare-firmware", transform: URL.init(fileURLWithPath:))
+    var ipswDirectory: URL?
+
     @Option(help: "Automation variant")
     var variant: Variant = {
         let env = ProcessInfo.processInfo.environment
@@ -42,6 +69,15 @@ struct SetupMachineCLI: AsyncParsableCommand {
         let runner = try SetupMachineRunner(
             projectRoot: projectRoot.standardizedFileURL,
             vmDirectoryName: vmDirectory,
+            cpu: cpu,
+            memory: memory,
+            diskSize: diskSize,
+            iPhoneDevice: iPhoneDevice,
+            iPhoneVersion: iPhoneVersion,
+            iPhoneBuild: iPhoneBuild,
+            iPhoneSource: iPhoneSource,
+            cloudOSSource: cloudOSSource,
+            ipswDirectory: ipswDirectory?.standardizedFileURL,
             variant: variant,
             skipProjectSetup: skipProjectSetup,
             nonInteractive: nonInteractive
@@ -53,6 +89,15 @@ struct SetupMachineCLI: AsyncParsableCommand {
 private struct SetupMachineRunner {
     let projectRoot: URL
     let vmDirectoryName: String
+    let cpu: Int
+    let memory: Int
+    let diskSize: Int
+    let iPhoneDevice: String?
+    let iPhoneVersion: String?
+    let iPhoneBuild: String?
+    let iPhoneSource: String?
+    let cloudOSSource: String?
+    let ipswDirectory: URL?
     let variant: SetupMachineCLI.Variant
     let skipProjectSetup: Bool
     let nonInteractive: Bool
@@ -61,9 +106,18 @@ private struct SetupMachineRunner {
     let bootDFULog: URL
     let bootLog: URL
 
-    init(projectRoot: URL, vmDirectoryName: String, variant: SetupMachineCLI.Variant, skipProjectSetup: Bool, nonInteractive: Bool) throws {
+    init(projectRoot: URL, vmDirectoryName: String, cpu: Int, memory: Int, diskSize: Int, iPhoneDevice: String?, iPhoneVersion: String?, iPhoneBuild: String?, iPhoneSource: String?, cloudOSSource: String?, ipswDirectory: URL?, variant: SetupMachineCLI.Variant, skipProjectSetup: Bool, nonInteractive: Bool) throws {
         self.projectRoot = projectRoot
         self.vmDirectoryName = vmDirectoryName
+        self.cpu = cpu
+        self.memory = memory
+        self.diskSize = diskSize
+        self.iPhoneDevice = iPhoneDevice
+        self.iPhoneVersion = iPhoneVersion
+        self.iPhoneBuild = iPhoneBuild
+        self.iPhoneSource = iPhoneSource
+        self.cloudOSSource = cloudOSSource
+        self.ipswDirectory = ipswDirectory
         self.variant = variant
         self.skipProjectSetup = skipProjectSetup
         self.nonInteractive = nonInteractive
@@ -89,43 +143,99 @@ private struct SetupMachineRunner {
         }
     }
 
+    var patcherExecutable: String {
+        VPhoneHost.currentExecutablePath()
+    }
+
+    var releaseBinary: URL {
+        projectRoot.appendingPathComponent(".build/release/vphone-cli")
+    }
+
+    var entitlementsURL: URL {
+        projectRoot.appendingPathComponent("sources/vphone.entitlements")
+    }
+
+    var buildInfoURL: URL {
+        projectRoot.appendingPathComponent("sources/vphone-cli/VPhoneBuildInfo.swift")
+    }
+
+    var vmDirectoryURL: URL {
+        projectRoot.appendingPathComponent(vmDirectoryName, isDirectory: true)
+    }
+
+    var configURL: URL {
+        vmDirectoryURL.appendingPathComponent("config.plist")
+    }
+
     func run() async throws {
-        print("[*] setup-machine variant=\(variant.rawValue) skipProjectSetup=\(skipProjectSetup) nonInteractive=\(nonInteractive)")
+        print("[*] setup-machine variant=\(variant.rawValue) cpu=\(cpu) memory=\(memory) disk=\(diskSize)GB skipProjectSetup=\(skipProjectSetup) nonInteractive=\(nonInteractive)")
 
         if !skipProjectSetup {
-            try await runMake("Project setup", args: ["setup_tools"])
-            try await runMake("Project setup", args: ["build"])
+            try await runCLI("Project setup", args: ["setup-tools", "--project-root", projectRoot.path])
+            try await buildHostBinary()
         } else {
             print("[*] Skipping setup_tools/build")
         }
 
-        try await runMake("Firmware prep", args: ["vm_new"])
-        try await runMake("Firmware prep", args: ["fw_prepare"])
-        try await runMake("Firmware patch", args: [fwPatchTarget])
+        try await runCLI("Host preflight", args: ["boot-host-preflight", "--project-root", projectRoot.path, "--assert-bootable"])
+        try await runCLI("Firmware prep", args: [
+            "vm-create",
+            "--dir", vmDirectoryURL.path,
+            "--disk-size", "\(diskSize)",
+            "--cpu", "\(cpu)",
+            "--memory", "\(memory)",
+        ])
+        try await runCLI("Firmware prep", args: prepareFirmwareArguments())
+        try await runCLI("Firmware patch", args: [
+            "patch-firmware",
+            "--vm-directory", vmDirectoryURL.path,
+            "--variant", variant.rawValue,
+        ])
 
-        let dfu = try startBackgroundMake(target: "boot_dfu", logURL: bootDFULog)
+        let dfu = try startBackgroundBoot(dfu: true, logURL: bootDFULog)
         defer { dfu.terminate() }
 
         let identity = try await waitForIdentity()
-        try await runMake("Restore", args: ["restore_get_shsh", "RESTORE_UDID=\(identity.udid)", "RESTORE_ECID=0x\(identity.ecid)"])
-        try await runMake("Restore", args: ["restore", "RESTORE_UDID=\(identity.udid)", "RESTORE_ECID=0x\(identity.ecid)"])
+        try await runCLI("Restore", args: [
+            "restore-get-shsh",
+            vmDirectoryURL.path,
+            "--udid", identity.udid,
+            "--ecid", "0x\(identity.ecid)",
+        ])
+        try await runCLI("Restore", args: [
+            "restore-device",
+            vmDirectoryURL.path,
+            "--udid", identity.udid,
+            "--ecid", "0x\(identity.ecid)",
+        ])
 
         dfu.terminate()
         try await Task.sleep(for: .seconds(5))
 
-        let ramdiskDFU = try startBackgroundMake(target: "boot_dfu", logURL: bootDFULog)
+        let ramdiskDFU = try startBackgroundBoot(dfu: true, logURL: bootDFULog)
         defer { ramdiskDFU.terminate() }
 
         let ramdiskIdentity = try await waitForIdentity()
-        try await runMake("Ramdisk", args: ["ramdisk_build", "RAMDISK_UDID=\(ramdiskIdentity.udid)"])
-        try await runMake("Ramdisk", args: ["ramdisk_send", "RAMDISK_ECID=0x\(ramdiskIdentity.ecid)", "RAMDISK_UDID=\(ramdiskIdentity.udid)"])
+        try await runCLI("Ramdisk", args: ["build-ramdisk", vmDirectoryURL.path])
+        try await runCLI("Ramdisk", args: [
+            "send-ramdisk",
+            "--ramdisk-dir", vmDirectoryURL.appendingPathComponent("Ramdisk").path,
+            "--udid", ramdiskIdentity.udid,
+            "--ecid", "0x\(ramdiskIdentity.ecid)",
+        ])
 
         let forwardedPort = try chooseRandomPort()
         let usbmux = try startUSBMuxForward(localPort: forwardedPort, serial: ramdiskIdentity.udid)
         defer { usbmux.terminate() }
 
         try await waitForSSH(port: forwardedPort)
-        try await runMake("CFW install", args: [cfwInstallTarget, "SSH_PORT=\(forwardedPort)"])
+        try await runCLI("CFW install", args: [
+            "cfw-install",
+            vmDirectoryURL.path,
+            "--project-root", projectRoot.path,
+            "--variant", variant.rawValue,
+            "--ssh-port", "\(forwardedPort)",
+        ])
 
         ramdiskDFU.terminate()
         usbmux.terminate()
@@ -141,12 +251,40 @@ private struct SetupMachineRunner {
         print("[+] setup-machine complete")
     }
 
-    func runMake(_ label: String, args: [String]) async throws {
+    func runCLI(_ label: String, args: [String]) async throws {
         print("")
         print("=== \(label) ===")
-        let result = try await VPhoneHost.runCommand("make", arguments: args, environment: ["VM_DIR": vmDirectoryName], requireSuccess: true)
+        let result = try await VPhoneHost.runCommand(patcherExecutable, arguments: args, requireSuccess: true)
         if !result.standardOutput.isEmpty { print(result.standardOutput) }
         if !result.standardError.isEmpty { print(result.standardError) }
+    }
+
+    func buildHostBinary() async throws {
+        print("")
+        print("=== Project build ===")
+        let gitHashResult = try await VPhoneHost.runCommand(
+            "git",
+            arguments: ["-C", projectRoot.path, "rev-parse", "--short", "HEAD"],
+            requireSuccess: false
+        )
+        let gitHash = gitHashResult.terminationStatus.isSuccess
+            ? gitHashResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "unknown"
+        let buildInfo = """
+        // Auto-generated — do not edit
+        enum VPhoneBuildInfo { static let commitHash = "\(gitHash.isEmpty ? "unknown" : gitHash)" }
+        """
+        try buildInfo.write(to: buildInfoURL, atomically: true, encoding: .utf8)
+        _ = try await VPhoneHost.runCommand(
+            "swift",
+            arguments: ["build", "-c", "release", "--package-path", projectRoot.path],
+            requireSuccess: true
+        )
+        _ = try await VPhoneHost.runCommand(
+            "codesign",
+            arguments: ["--force", "--sign", "-", "--entitlements", entitlementsURL.path, releaseBinary.path],
+            requireSuccess: true
+        )
     }
 
     func waitForIdentity(timeout: TimeInterval = 30) async throws -> (udid: String, ecid: String) {
@@ -177,13 +315,12 @@ private struct SetupMachineRunner {
         throw ValidationError("Timed out waiting for udid-prediction.txt")
     }
 
-    func startBackgroundMake(target: String, logURL: URL) throws -> ManagedProcess {
+    func startBackgroundBoot(dfu: Bool, logURL: URL) throws -> ManagedProcess {
         try Data().write(to: logURL)
         let process = Process()
         process.currentDirectoryURL = projectRoot
-        process.executableURL = URL(fileURLWithPath: resolveCommand("make") ?? "/usr/bin/make")
-        process.arguments = [target]
-        process.environment = ProcessInfo.processInfo.environment.merging(["VM_DIR": vmDirectoryName]) { _, new in new }
+        process.executableURL = releaseBinary
+        process.arguments = ["--config", configURL.path] + (dfu ? ["--dfu"] : [])
         let logHandle = try FileHandle(forWritingTo: logURL)
         process.standardOutput = logHandle
         process.standardError = logHandle
@@ -191,10 +328,37 @@ private struct SetupMachineRunner {
         return ManagedProcess(process: process, logHandle: logHandle)
     }
 
+    func prepareFirmwareArguments() -> [String] {
+        var arguments = [
+            "prepare-firmware",
+            "--project-root", projectRoot.path,
+            "--output-dir", vmDirectoryURL.path,
+        ]
+        if let iPhoneDevice {
+            arguments += ["--device", iPhoneDevice]
+        }
+        if let iPhoneVersion {
+            arguments += ["--version", iPhoneVersion]
+        }
+        if let iPhoneBuild {
+            arguments += ["--build", iPhoneBuild]
+        }
+        if let iPhoneSource {
+            arguments += ["--iphone-source", iPhoneSource]
+        }
+        if let cloudOSSource {
+            arguments += ["--cloudos-source", cloudOSSource]
+        }
+        if let ipswDirectory {
+            arguments += ["--ipsw-dir", ipswDirectory.path]
+        }
+        return arguments
+    }
+
     func startUSBMuxForward(localPort: Int, serial: String) throws -> ManagedProcess {
         let process = Process()
         process.currentDirectoryURL = projectRoot
-        process.executableURL = projectRoot.appendingPathComponent(".build/debug/vphone-cli")
+        process.executableURL = URL(fileURLWithPath: patcherExecutable)
         process.arguments = ["usbmux-forward", "--local-port", "\(localPort)", "--serial", serial, "--remote-port", "22"]
         let output = Pipe()
         process.standardOutput = output
@@ -232,8 +396,8 @@ private struct SetupMachineRunner {
         try Data().write(to: bootLog)
         let process = Process()
         process.currentDirectoryURL = projectRoot
-        process.executableURL = URL(fileURLWithPath: resolveCommand("make") ?? "/usr/bin/make")
-        process.arguments = ["boot", "VM_DIR=\(vmDirectoryName)"]
+        process.executableURL = releaseBinary
+        process.arguments = ["--config", configURL.path]
         let stdinPipe = Pipe()
         process.standardInput = stdinPipe
         let logHandle = try FileHandle(forWritingTo: bootLog)
@@ -262,8 +426,8 @@ private struct SetupMachineRunner {
         try Data().write(to: bootLog)
         let process = Process()
         process.currentDirectoryURL = projectRoot
-        process.executableURL = URL(fileURLWithPath: resolveCommand("make") ?? "/usr/bin/make")
-        process.arguments = ["boot", "VM_DIR=\(vmDirectoryName)"]
+        process.executableURL = releaseBinary
+        process.arguments = ["--config", configURL.path]
         let logHandle = try FileHandle(forWritingTo: bootLog)
         process.standardOutput = logHandle
         process.standardError = logHandle
@@ -314,14 +478,6 @@ private struct SetupMachineRunner {
             }
         }
         return result == 0
-    }
-
-    func resolveCommand(_ command: String) -> String? {
-        ProcessInfo.processInfo.environment["PATH"]?
-            .split(separator: ":")
-            .map(String.init)
-            .map { URL(fileURLWithPath: $0).appendingPathComponent(command).path }
-            .first(where: { FileManager.default.isExecutableFile(atPath: $0) })
     }
 }
 
