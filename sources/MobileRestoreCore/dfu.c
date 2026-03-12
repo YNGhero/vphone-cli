@@ -41,6 +41,43 @@ static int dfu_progress_callback(irecv_client_t client, const irecv_event_t* eve
 	return 0;
 }
 
+static struct irecv_device vphone_pcc_release_device = {
+	"iPhone99,11",
+	"vresearch101ap",
+	0x90,
+	0xFE01,
+	"iPhone 99,11"
+};
+
+static struct irecv_device vphone_pcc_dev_device = {
+	"iPhone99,11",
+	"vresearch101devap",
+	0x90,
+	0xFE01,
+	"iPhone 99,11"
+};
+
+static irecv_device_t dfu_fallback_irecv_device(const struct irecv_device_info* device_info)
+{
+	const char* serial = NULL;
+	const char* srtg = NULL;
+
+	if (!device_info) {
+		return NULL;
+	}
+
+	if (device_info->bdid != 0x90) {
+		return NULL;
+	}
+
+	serial = device_info->serial_string;
+	srtg = device_info->srtg;
+	if ((serial && strstr(serial, "vresearch101devap")) || (srtg && strstr(srtg, "vresearch101devap"))) {
+		return &vphone_pcc_dev_device;
+	}
+	return &vphone_pcc_release_device;
+}
+
 int dfu_client_new(struct idevicerestore_client_t* client)
 {
 	irecv_client_t dfu = NULL;
@@ -90,10 +127,21 @@ irecv_device_t dfu_get_irecv_device(struct idevicerestore_client_t* client)
 	}
 
 	dfu_error = irecv_devices_get_device_by_client(dfu, &device);
-	if (dfu_error == IRECV_E_SUCCESS) {
-		if (client->ecid == 0) {
-			const struct irecv_device_info *device_info = irecv_get_device_info(dfu);
-			client->ecid = device_info->ecid;
+	const struct irecv_device_info *device_info = irecv_get_device_info(dfu);
+	if (device_info && client->ecid == 0) {
+		client->ecid = device_info->ecid;
+	}
+	if (dfu_error != IRECV_E_SUCCESS) {
+		logger(LL_INFO, "libirecovery could not identify DFU device directly (cpid=0x%04x bdid=0x%02x ecid=%" PRIu64 " serial=%s srtg=%s)\n",
+			device_info ? device_info->cpid : 0,
+			device_info ? device_info->bdid : 0,
+			device_info ? device_info->ecid : 0,
+			(device_info && device_info->serial_string) ? device_info->serial_string : "<null>",
+			(device_info && device_info->srtg) ? device_info->srtg : "<null>");
+		device = dfu_fallback_irecv_device(device_info);
+		if (device) {
+			dfu_error = IRECV_E_SUCCESS;
+			logger(LL_INFO, "Using PCC fallback DFU identity: %s, %s\n", device->hardware_model, device->product_type);
 		}
 	}
 	irecv_close(dfu);
@@ -672,4 +720,3 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 
 	return 0;
 }
-

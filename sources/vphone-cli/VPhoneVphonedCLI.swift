@@ -63,6 +63,10 @@ struct VphonedBuilder {
         sourceDirectory.appendingPathComponent("signcert.p12")
     }
 
+    var vendoredLibarchiveIncludeURL: URL {
+        sourceDirectory.appendingPathComponent("vendor/libarchive", isDirectory: true)
+    }
+
     func build(signedCopyURL: URL?, gitHash: String) async throws -> VphonedBuildResult {
         let sourceFiles = try FileManager.default.contentsOfDirectory(at: sourceDirectory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "m" }
@@ -78,16 +82,28 @@ struct VphonedBuilder {
                 requireSuccess: true
             )
         )
+        let sdk = VPhoneHost.stringValue(
+            try await VPhoneHost.runCommand(
+                "xcrun",
+                arguments: ["--sdk", "iphoneos", "--show-sdk-path"],
+                requireSuccess: true
+            )
+        )
         guard !clang.isEmpty else {
             throw ValidationError("xcrun did not return a clang path")
         }
+        guard !sdk.isEmpty else {
+            throw ValidationError("xcrun did not return an iphoneos SDK path")
+        }
 
         let arguments = [
+            "-isysroot", sdk,
             "-arch", "arm64",
+            "-miphoneos-version-min=15.0",
             "-Os",
             "-fobjc-arc",
             "-I.",
-            "-Ivendor/libarchive",
+            "-I\(vendoredLibarchiveIncludeURL.path)",
             "-DVPHONED_BUILD_HASH=\"\(gitHash)\"",
             "-o", binaryURL.path,
         ] + sourceFiles.map(\.path) + [

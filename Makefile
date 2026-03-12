@@ -29,7 +29,7 @@ ENTITLEMENTS := sources/vphone.entitlements
 VM_DIR_ABS  := $(abspath $(VM_DIR))
 TOOLS_PREFIX := .tools
 
-SWIFT_SOURCES := $(shell find sources -name '*.swift')
+SWIFT_SOURCES := $(shell find sources \( -name '*.swift' -o -name '*.c' -o -name '*.h' \))
 
 # ─── Environment — prefer project-local binaries ────────────────
 export PATH := $(CURDIR)/$(TOOLS_PREFIX)/bin:$(CURDIR)/.build/release:$(PATH)

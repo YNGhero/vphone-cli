@@ -182,6 +182,12 @@
 
 ## Swift Migration Notes (2026-03-10)
 
+- `MobileRestoreCore/dfu.c` now carries a PCC-specific `libirecovery` fallback for DFU identity resolution:
+  - primary path remains `irecv_devices_get_device_by_client`
+  - when upstream table lookup still fails for PCC research VMs, the fallback inspects DFU `device_info`
+  - `CPID 0xFE01` + `BDID 0x90` maps to `vresearch101ap` by default, and switches to `vresearch101devap` if the DFU serial / srtg advertises the dev board config
+  - this keeps restore transport on `libirecovery` while avoiding the old `MobileDevice.framework` symbol path
+
 - Swift `FirmwarePatcher` now matches the Python reference patch output across all checked components:
   - `avpbooter` 1/1
   - `ibss` 4/4
