@@ -48,8 +48,17 @@ struct VPhoneMain {
             case var command as SetupToolsCLI:
                 try await command.run()
 
+            case var command as SetupMachineCLI:
+                try await command.run()
+
             case var command as CFWInstallCLI:
                 try await command.run()
+
+            case var command as USBMuxListCLI:
+                try command.run()
+
+            case var command as USBMuxForwardCLI:
+                try command.run()
 
             case var command as CFWCryptexPathsCLI:
                 try command.run()

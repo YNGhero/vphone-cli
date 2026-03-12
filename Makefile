@@ -106,12 +106,13 @@ setup_machine:
 		echo "Error: JB=1 and DEV=1 are mutually exclusive"; \
 		exit 1; \
 	fi
-	SUDO_PASSWORD="$(SUDO_PASSWORD)" \
+	VM_DIR="$(VM_DIR)" \
+	JB="$(JB)" \
+	DEV="$(DEV)" \
+	SKIP_PROJECT_SETUP="$(SKIP_PROJECT_SETUP)" \
 	NONE_INTERACTIVE="$(NONE_INTERACTIVE)" \
-	zsh $(SCRIPTS)/setup_machine.sh \
-		$(if $(filter 1 true yes YES TRUE,$(JB)),--jb,) \
-		$(if $(filter 1 true yes YES TRUE,$(DEV)),--dev,) \
-		$(if $(filter 1 true yes YES TRUE,$(SKIP_PROJECT_SETUP)),--skip-project-setup,)
+	SUDO_PASSWORD="$(SUDO_PASSWORD)" \
+	"$(CURDIR)/$(PATCHER_BINARY)" setup-machine --project-root "$(CURDIR)"
 
 setup_tools: patcher_build
 	"$(CURDIR)/$(PATCHER_BINARY)" setup-tools --project-root "$(CURDIR)"
