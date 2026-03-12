@@ -1,6 +1,27 @@
 import Darwin
 import Foundation
 
+enum AppleMobileDeviceLibrary {
+    static let frameworkPath = "/System/Library/PrivateFrameworks/MobileDevice.framework/MobileDevice"
+
+    typealias USBMuxCopyDeviceArrayFn = @convention(c) () -> Unmanaged<CFArray>?
+    typealias USBMuxConnectByPortFn = @convention(c) (UInt32, UInt16, UnsafeMutablePointer<Int32>?) -> Int32
+
+    static func copyDeviceArray() -> USBMuxCopyDeviceArrayFn? {
+        symbol("_USBMuxCopyDeviceArray")
+    }
+
+    static func connectByPort() -> USBMuxConnectByPortFn? {
+        symbol("_USBMuxConnectByPort")
+    }
+
+    static func symbol<T>(_ name: String) -> T? {
+        guard let handle = dlopen(frameworkPath, RTLD_NOW) else { return nil }
+        guard let raw = dlsym(handle, name) else { return nil }
+        return unsafeBitCast(raw, to: T.self)
+    }
+}
+
 struct USBMuxDevice: Sendable {
     let deviceID: Int
     let serialNumber: String
@@ -39,6 +60,15 @@ enum USBMuxClient {
     }
 
     static func listDevices() throws -> [USBMuxDevice] {
+        if let copyDeviceArray = AppleMobileDeviceLibrary.copyDeviceArray(),
+           let array = copyDeviceArray()?.takeRetainedValue() as? [[String: Any]]
+        {
+            let parsed = array.compactMap(parseDevice)
+            if !parsed.isEmpty {
+                return parsed
+            }
+        }
+
         let socket = try connectSocket()
         defer { close(socket) }
 
@@ -60,6 +90,14 @@ enum USBMuxClient {
     }
 
     static func connect(deviceID: Int, port: UInt16) throws -> Int32 {
+        if let connectByPort = AppleMobileDeviceLibrary.connectByPort() {
+            var socket: Int32 = -1
+            let result = connectByPort(UInt32(deviceID), port.bigEndian, &socket)
+            if result == 0, socket >= 0 {
+                return socket
+            }
+        }
+
         let socket = try connectSocket()
         do {
             try sendPlist([
@@ -130,7 +168,7 @@ enum USBMuxClient {
     static func sendPlist(_ plist: [String: Any], to socket: Int32, tag: UInt32) throws {
         let payload = try PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0)
         let totalLength = UInt32(MemoryLayout<UInt32>.size * 4 + payload.count)
-        var headerWords = [
+        let headerWords = [
             totalLength.littleEndian,
             protocolVersion.littleEndian,
             plistMessageType.littleEndian,

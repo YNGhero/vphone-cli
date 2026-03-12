@@ -50,7 +50,7 @@ help:
 	@echo "             SUDO_PASSWORD=...         Preload sudo credential for setup flow"
 	@echo ""
 	@echo "Setup (one-time):"
-	@echo "  make setup_tools             Install host tools (brew, inject)"
+	@echo "  make setup_tools             Install required host tools (ldid, git-lfs, inject)"
 	@echo ""
 	@echo "Build:"
 	@echo "  make build                   Build + sign vphone-cli"
@@ -81,8 +81,8 @@ help:
 	@echo "  make fw_patch_jb             Patch boot chain with Swift pipeline (dev + JB extensions)"
 	@echo ""
 	@echo "Restore:"
-	@echo "  make restore_get_shsh        Dump SHSH response from Apple"
-	@echo "  make restore                 idevicerestore to device"
+	@echo "  make restore_get_shsh        Request restore personalization data"
+	@echo "  make restore                 Restore firmware to the connected device"
 	@echo ""
 	@echo "Ramdisk:"
 	@echo "  make ramdisk_build           Build signed SSH ramdisk"
@@ -159,11 +159,7 @@ bundle: build $(INFO_PLIST)
 	@cp -f sources/AppIcon.icns $(BUNDLE)/Contents/Resources/AppIcon.icns
 	@cp -f $(SCRIPTS)/vphoned/signcert.p12 $(BUNDLE)/Contents/Resources/signcert.p12
 	@cp -f $$(command -v ldid) $(BUNDLE)/Contents/MacOS/ldid
-	@cp -f $$(command -v ideviceinstaller) $(BUNDLE)/Contents/MacOS/ideviceinstaller
-	@cp -f $$(command -v idevice_id) $(BUNDLE)/Contents/MacOS/idevice_id
 	@codesign --force --sign - $(BUNDLE)/Contents/MacOS/ldid
-	@codesign --force --sign - $(BUNDLE)/Contents/MacOS/ideviceinstaller
-	@codesign --force --sign - $(BUNDLE)/Contents/MacOS/idevice_id
 	@codesign --force --sign - --entitlements $(ENTITLEMENTS) $(BUNDLE_BIN)
 	@echo "  bundled → $(BUNDLE)"
 

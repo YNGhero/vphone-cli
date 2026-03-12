@@ -8,10 +8,9 @@ Virtual iPhone boot tool using Apple's Virtualization.framework with PCC researc
 - **Boot (GUI):** `make boot`
 - **Boot (DFU):** `make boot_dfu`
 - **All targets:** `make help`
-- **Python venv:** `make setup_venv` (installs to `.venv/`, activate with `source .venv/bin/activate`)
 - **Platform:** macOS 15+ (Sequoia), SIP/AMFI disabled
 - **Language:** Swift 6.0 (SwiftPM), private APIs via [Dynamic](https://github.com/mhdhejazi/Dynamic)
-- **Python deps:** `capstone`, `keystone-engine`, `pyimg4` (see `requirements.txt`)
+- **Host automation:** Swift CLI + `Makefile` targets only
 
 ## Workflow Rules
 
@@ -88,21 +87,12 @@ sources/
 
 scripts/
 ├── vphoned/                      # Guest daemon (ObjC, runs inside iOS VM over vsock)
-├── patchers/                     # Python CFW patcher modules
-│   └── cfw.py                    #   CFW binary patcher entrypoint
 ├── resources/                    # Resource archives (git submodule)
-├── patches/                      # Build-time patches (libirecovery)
-├── cfw_install.sh                # Install CFW (regular)
-├── cfw_install_dev.sh            # Regular + rpcserver daemon
-├── cfw_install_jb.sh             # Regular + jetsam fix + procursus
-├── setup_machine.sh              # Full automation (setup → first boot)
-├── setup_tools.sh                # Install deps, build toolchain, create venv
-├── setup_venv.sh                 # Create Python venv
-├── setup_venv_linux.sh           # Create Python venv (Linux)
-├── setup_libimobiledevice.sh     # Build libimobiledevice from source
-└── tail_jb_patch_logs.sh         # Tail JB patch log output
+├── patches/                      # Research/reference patches
+├── vphone_jb_setup.plist         # First-boot JB LaunchDaemon plist
+└── vphone_jb_setup.sh            # Guest-side first-boot JB finalization
 
-Host-side automation entrypoints that previously lived in shell/Python are being migrated into `sources/vphone-cli/` subcommands such as `vm-create`, `generate-vm-manifest`, `prepare-firmware`, `build-ramdisk`, `send-ramdisk`, `boot-host-preflight`, and `start-amfidont`.
+Host-side automation entrypoints now live in `sources/vphone-cli/` subcommands such as `vm-create`, `generate-vm-manifest`, `prepare-firmware`, `patch-firmware`, `build-ramdisk`, `send-ramdisk`, `cfw-install`, `setup-tools`, `setup-machine`, `boot-host-preflight`, `start-amfidont`, and `usbmux-forward`.
 
 research/                         # Detailed firmware/patch documentation
 ```
@@ -138,8 +128,6 @@ research/                         # Detailed firmware/patch documentation
 - Use `zsh` with `set -euo pipefail`.
 - Scripts resolve their own directory via `${0:a:h}` or `$(cd "$(dirname "$0")" && pwd)`.
 
-### Python Scripts
-
 ### Kernel patcher guardrails
 
 - For kernel patchers, never hardcode file offsets, virtual addresses, or preassembled instruction bytes inside patch logic.
@@ -149,10 +137,9 @@ research/                         # Detailed firmware/patch documentation
 - When retargeting a patch, write the reveal procedure and validation steps into the relevant research doc or commit notes before handing off for testing. Do not create `TODO.md`.
 - For `patch_bsd_init_auth` specifically, the allowed reveal flow is: recover `bsd_init` -> locate rootvp panic block -> find the unique in-function `call` -> `cbnz w0/x0, panic` -> `bl imageboot_needed` site -> patch the branch gate only.
 
-- Patchers use `capstone` (disassembly), `keystone-engine` (assembly), `pyimg4` (IM4P handling).
+- Patchers use Swift host tooling backed by vendored disassembly / IMG4 libraries.
 - Dynamic pattern finding (string anchors, ADRP+ADD xrefs, BL frequency) — no hardcoded offsets.
 - Each patch logged with offset and before/after state.
-- Use project venv (`source .venv/bin/activate`). Create with `make setup_venv`.
 
 ## Build & Sign
 

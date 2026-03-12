@@ -82,7 +82,7 @@ Boot into Recovery (long press power button), open Terminal, then choose one set
 **Install dependencies:**
 
 ```bash
-brew install ideviceinstaller wget gnu-tar openssl@3 ldid-procursus sshpass keystone autoconf automake pkg-config libtool cmake
+brew install wget gnu-tar openssl@3 ldid-procursus git-lfs
 ```
 
 **Submodules** — this repo uses a git submodule for resource archives. Clone with:
@@ -101,7 +101,7 @@ make setup_machine            # full automation through "First Boot" (includes r
 ## Manual Setup
 
 ```bash
-make setup_tools              # install brew deps, build trustcache, clone insert_dylib, build libimobiledevice, create Python venv
+make setup_tools              # install required host tools and build vendored inject
 make build                    # build + sign vphone-cli
 make vm_new                   # create VM directory with manifest (config.plist)
 # options: CPU=8 MEMORY=8192 DISK_SIZE=64
@@ -136,8 +136,8 @@ make boot_dfu                 # boot VM in DFU mode (keep running)
 
 ```bash
 # terminal 2
-make restore_get_shsh         # fetch SHSH blob
-make restore                  # flash firmware via idevicerestore
+make restore_get_shsh         # request restore personalization data
+make restore                  # flash firmware to the device
 ```
 
 ## Install Custom Firmware
@@ -155,11 +155,11 @@ sudo make ramdisk_build       # build signed SSH ramdisk
 make ramdisk_send             # send to device
 ```
 
-Once the ramdisk is running (you should see `Running server` in the output), open a **third terminal** for the iproxy tunnel, then install CFW from terminal 2:
+Once the ramdisk is running (you should see `Running server` in the output), open a **third terminal** for the USBMux forwarder, then install CFW from terminal 2:
 
 ```bash
 # terminal 3 — keep running
-iproxy 2222 22
+./.build/debug/vphone-cli usbmux-forward --local-port 2222 --serial <UDID> --remote-port 22
 ```
 
 ```bash
@@ -202,13 +202,13 @@ shutdown -h now
 make boot
 ```
 
-In a separate terminal, start iproxy tunnels:
+In a separate terminal, start USBMux forwards:
 
 ```bash
-iproxy 22222 22222   # SSH (dropbear)
-iproxy 2222 22       # SSH (JB: if you install openssh-server from Sileo)
-iproxy 5901 5901     # VNC
-iproxy 5910 5910     # RPC
+./.build/debug/vphone-cli usbmux-forward --local-port 22222 --serial <UDID> --remote-port 22222
+./.build/debug/vphone-cli usbmux-forward --local-port 2222 --serial <UDID> --remote-port 22
+./.build/debug/vphone-cli usbmux-forward --local-port 5901 --serial <UDID> --remote-port 5901
+./.build/debug/vphone-cli usbmux-forward --local-port 5910 --serial <UDID> --remote-port 5910
 ```
 
 Connect via:
