@@ -106,6 +106,7 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if !cli.noGraphics {
+            let projectRootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             let keyHelper = VPhoneKeyHelper(vm: vm, control: control)
             let wc = VPhoneWindowController()
             wc.showWindow(
@@ -128,7 +129,6 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
             let appWC = VPhoneAppWindowController()
             appWindowController = appWC
 
-            let projectRootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             let instanceWC = VPhoneInstanceWindowController(projectRootURL: projectRootURL)
             instanceWindowController = instanceWC
 
@@ -167,6 +167,13 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
             wc.onScreenshotPressed = { [weak mc] in mc?.saveScreenshotToFile() }
             wc.onRebootPressed = { [weak mc] in mc?.rebootGuest() }
             wc.onRespringPressed = { [weak mc] in mc?.respringGuest() }
+            wc.onArrangeWindowsPressed = {
+                Task { @MainActor in
+                    _ = await VPhoneWindowArranger.arrangeRunningInstanceWindows(
+                        projectRootURL: projectRootURL
+                    )
+                }
+            }
             wc.onConnectionInfoPressed = { [weak mc] in mc?.showConnectionInfo() }
 
             let socketPath = options.configURL
@@ -182,6 +189,9 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
                 screenHeight: options.screenHeight,
                 showWindow: { [weak wc] in
                     wc?.showExistingWindow()
+                },
+                arrangeWindow: { [weak wc] frame in
+                    wc?.applyCompactFrame(frame)
                 }
             )
             hostControl = hc

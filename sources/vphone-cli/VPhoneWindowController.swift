@@ -13,6 +13,8 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
     private var guestConnected = false
     private var installPackageAvailable = false
     private static let sidebarWidth: CGFloat = 35
+    private static let compactFrameSize = NSSize(width: 275, height: 550)
+    private static let compactContentMinSize = NSSize(width: 275, height: 520)
 
     private nonisolated static let homeItemID = NSToolbarItem.Identifier("home")
     private nonisolated static let installPackageItemID = NSToolbarItem.Identifier("install-package")
@@ -41,6 +43,7 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
     private weak var screenshotSidebarButton: NSButton?
     private weak var rebootSidebarButton: NSButton?
     private weak var respringSidebarButton: NSButton?
+    private weak var arrangeWindowsSidebarButton: NSButton?
     private weak var connectionInfoSidebarButton: NSButton?
 
     var onInstallPackagePressed: (() -> Void)? {
@@ -62,6 +65,9 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
         didSet { refreshToolbarAvailability() }
     }
     var onRespringPressed: (() -> Void)? {
+        didSet { refreshToolbarAvailability() }
+    }
+    var onArrangeWindowsPressed: (() -> Void)? {
         didSet { refreshToolbarAvailability() }
     }
     var onConnectionInfoPressed: (() -> Void)? {
@@ -104,7 +110,8 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
 
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.contentMinSize = NSSize(width: Self.sidebarWidth + 260, height: 520)
+        window.minSize = Self.compactFrameSize
+        window.contentMinSize = Self.compactContentMinSize
         window.title = "VPHONE [loading]"
         window.subtitle = makeSubtitle(ip: nil)
         window.contentView = makeContentView(vmView: vmView, vmContentSize: vmContentSize)
@@ -148,6 +155,12 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
             window.makeFirstResponder(virtualMachineView)
         }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applyCompactFrame(_ frame: NSRect) {
+        guard let window = windowController?.window else { return }
+        window.setFrame(frame.integral, display: true, animate: true)
+        window.orderFront(nil)
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -204,6 +217,11 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
             symbolName: "arrow.triangle.2.circlepath",
             action: #selector(respringPressed)
         )
+        arrangeWindowsSidebarButton = makeSidebarButton(
+            title: "快速对齐排序",
+            symbolName: "rectangle.3.group",
+            action: #selector(arrangeWindowsPressed)
+        )
         connectionInfoSidebarButton = makeSidebarButton(
             title: "SSH 信息", symbolName: "info.circle", action: #selector(connectionInfoPressed)
         )
@@ -217,6 +235,7 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
             screenshotSidebarButton,
             rebootSidebarButton,
             respringSidebarButton,
+            arrangeWindowsSidebarButton,
             connectionInfoSidebarButton,
         ].compactMap { $0 }.forEach { stack.addArrangedSubview($0) }
 
@@ -469,6 +488,7 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
         screenshotSidebarButton?.isEnabled = onScreenshotPressed != nil
         rebootSidebarButton?.isEnabled = onRebootPressed != nil
         respringSidebarButton?.isEnabled = onRespringPressed != nil
+        arrangeWindowsSidebarButton?.isEnabled = onArrangeWindowsPressed != nil
         connectionInfoSidebarButton?.isEnabled = onConnectionInfoPressed != nil
     }
 
@@ -504,6 +524,10 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
 
     @objc private func respringPressed() {
         onRespringPressed?()
+    }
+
+    @objc private func arrangeWindowsPressed() {
+        onArrangeWindowsPressed?()
     }
 
     @objc private func connectionInfoPressed() {

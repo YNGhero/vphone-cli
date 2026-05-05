@@ -136,6 +136,21 @@ final class VPhoneInstanceManager {
         copyIdentity(record)
     }
 
+    func arrangeWindows() {
+        lastActionMessage = "正在缩小并对齐运行中的实例窗口..."
+        Task { @MainActor in
+            let result = await VPhoneWindowArranger.arrangeRunningInstanceWindows(
+                projectRootURL: projectRootURL
+            )
+            if result.targetCount == 0 {
+                lastActionMessage = "没有可对齐的运行中实例窗口。请先启动实例。"
+            } else {
+                lastActionMessage = "窗口对齐完成：\(result.successCount)/\(result.targetCount)。"
+            }
+            await refresh()
+        }
+    }
+
     func selectAll(_ records: [VPhoneInstanceRecord]) {
         selection = Set(records.map(\.id))
     }

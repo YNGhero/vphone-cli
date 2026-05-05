@@ -20,6 +20,7 @@ import ImageIO
 ///   {"t":"type_ascii","text":"Hello"}           → type ASCII via VM keyboard events
 ///   {"t":"type","text":"Hello"}                 → set guest clipboard
 ///   {"t":"show_window","screen":false}          → reveal hidden GUI window
+///   {"t":"arrange_window","x":0,"y":0,"w":275,"h":550,"screen":false} → resize/move GUI
 ///   {"t":"terminate_host","screen":false}       → quit vphone-cli host process
 ///
 /// All commands except "screenshot" wait briefly then capture a compact screen
@@ -36,6 +37,7 @@ class VPhoneHostControl {
     private weak var control: VPhoneControl?
     private weak var keyHelper: VPhoneKeyHelper?
     private var showWindowHandler: (() -> Void)?
+    private var arrangeWindowHandler: ((NSRect) -> Void)?
 
     /// Thread-safe box for passing results between main actor and accept queue.
     private final class ResultBox: @unchecked Sendable {
@@ -64,7 +66,8 @@ class VPhoneHostControl {
         keyHelper: VPhoneKeyHelper,
         screenWidth: Int,
         screenHeight: Int,
-        showWindow: (() -> Void)? = nil
+        showWindow: (() -> Void)? = nil,
+        arrangeWindow: ((NSRect) -> Void)? = nil
     ) {
         self.captureView = captureView
         self.screenRecorder = screenRecorder
@@ -73,6 +76,7 @@ class VPhoneHostControl {
         self.screenWidth = screenWidth
         self.screenHeight = screenHeight
         self.showWindowHandler = showWindow
+        self.arrangeWindowHandler = arrangeWindow
 
         unlink(socketPath)
 
@@ -292,6 +296,42 @@ class VPhoneHostControl {
                 controller.showWindowHandler?()
                 result.ok = true
                 result.message = "window shown"
+                if wantScreen {
+                    try? await Task.sleep(nanoseconds: UInt64(screenDelay) * 1_000_000)
+                    result.imageBase64 = await controller.captureCompactScreenshot()
+                }
+            }
+
+            semaphore.wait()
+            writeResponse(
+                fd, ok: result.ok, error: result.error, image: result.imageBase64,
+                message: result.message
+            )
+
+        case "arrange_window", "set_window_frame":
+            guard let x = number(json["x"] ?? json["left"]),
+                  let y = number(json["y"] ?? json["top"]),
+                  let width = number(json["w"] ?? json["width"]),
+                  let height = number(json["h"] ?? json["height"]),
+                  width > 0,
+                  height > 0
+            else {
+                writeResponse(fd, ok: false, error: "arrange_window requires x, y, w, h")
+                return
+            }
+
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let controller, let arrangeWindowHandler = controller.arrangeWindowHandler else {
+                    result.error = "window arrange unavailable"
+                    return
+                }
+                arrangeWindowHandler(NSRect(x: x, y: y, width: width, height: height))
+                result.ok = true
+                result.message = "window arranged"
                 if wantScreen {
                     try? await Task.sleep(nanoseconds: UInt64(screenDelay) * 1_000_000)
                     result.imageBase64 = await controller.captureCompactScreenshot()
@@ -542,6 +582,23 @@ class VPhoneHostControl {
 
         default:
             writeResponse(fd, ok: false, error: "unknown command: \(type)")
+        }
+    }
+
+    private nonisolated static func number(_ value: Any?) -> Double? {
+        switch value {
+        case let value as Double:
+            value
+        case let value as CGFloat:
+            Double(value)
+        case let value as Int:
+            Double(value)
+        case let value as NSNumber:
+            value.doubleValue
+        case let value as String:
+            Double(value)
+        default:
+            nil
         }
     }
 

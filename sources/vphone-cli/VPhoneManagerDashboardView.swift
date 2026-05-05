@@ -173,6 +173,15 @@ struct VPhoneManagerDashboardView: View {
                 .buttonStyle(VPhoneManagerPrimaryButtonStyle())
                 .controlSize(.small)
 
+                Button {
+                    model.arrangeWindows()
+                } label: {
+                    Label("快速对齐排序", systemImage: "rectangle.3.group")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(VPhoneManagerPrimaryButtonStyle())
+                .controlSize(.small)
+
                 Text("默认从 trollstore-clean 克隆。")
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.secondary)
