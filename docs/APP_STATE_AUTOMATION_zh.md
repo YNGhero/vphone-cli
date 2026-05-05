@@ -77,8 +77,8 @@ zsh scripts/app_new_device.sh 2224 com.example.app --yes
 一键新机会执行：
 
 1. 结束目标 App 进程。
-2. 清空 App data container。
-3. 清空识别到的 App Group container。
+2. 清空 App data container，但保留容器根目录里的 `.com.apple.mobile_container_manager.metadata.plist`。
+3. 清空识别到的 App Group container，也会保留对应 metadata。
 4. 删除目标 App preferences。
 5. 删除目标 App keychain access group 记录。
 6. 生成新的 profile：
@@ -115,6 +115,13 @@ zsh scripts/app_restore.sh 2224 com.example.app app_backups/com.example.app/phon
 - Keychain 子集
 - App profile
 
+还原时也会优先保留当前实例的容器 metadata，避免把另一个实例/旧 UUID 的 metadata 覆盖到当前容器。
+如果之前用旧版脚本清理过，metadata 已经被删，脚本会回退使用备份 `manifest.env` 里的旧 data container 路径，并在日志里提示：
+
+```text
+current data container metadata is missing; using backup manifest path: ...
+```
+
 ## 常见问题
 
 ### 1. 提示 SSH 连接失败
@@ -143,7 +150,21 @@ com.apple.security.system-groups
 
 如果解析失败，会回退到 metadata 里包含 bundle id 的 App Group。极少数 App 的 group 命名完全无关时，需要后续加手动 group id 参数。
 
-### 4. 提示 `app bundle not found`
+### 4. 提示 `data container not found`
+
+这个表示脚本没有在：
+
+```text
+/var/mobile/Containers/Data/Application/*/.com.apple.mobile_container_manager.metadata.plist
+```
+
+中找到目标 bundle id。
+
+旧版脚本的一键新机曾经会把 data container / App Group container 根目录里的 metadata 一起删掉，导致后续无法再通过 bundle id 反查容器路径。新版已修复：清理和还原都会保留当前容器 metadata。
+
+如果当前实例已经出现过这个问题，直接用新版 `app_restore.sh` 再还原一次即可；脚本会尽量使用备份 manifest 里的路径恢复数据和 metadata。
+
+### 5. 提示 `app bundle not found`
 
 先确认 bundle id 是否正确：
 
@@ -158,7 +179,7 @@ sshpass -p alpine ssh -p 2224 root@127.0.0.1 \
 - data container / App Group metadata 为 binary plist 时，用 `grep -a` 回退匹配 bundle id 或 group id。
 - 下载/上传备份时会自动补齐 guest 的 `/var/jb/usr/bin`、`/iosbinpack64/usr/bin` PATH，避免 `tar: command not found`。
 
-### 5. 这是完整 YOY 复刻吗？
+### 6. 这是完整 YOY 复刻吗？
 
 不是。当前脚本实现的是底层可控的 MVP：
 

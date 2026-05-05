@@ -27,6 +27,7 @@ esac
 
 FM="/usr/bin/find"
 [ -x "$FM" ] || FM="find"
+MCM_METADATA_NAME=".com.apple.mobile_container_manager.metadata.plist"
 
 xml_unescape_basic() {
   sed \
@@ -132,7 +133,27 @@ clean_dir_contents() {
   [ -n "$dir" ] || return 0
   [ -d "$dir" ] || { mkdir -p "$dir"; return 0; }
   # Do not expand globs. Use find to avoid deleting the container itself.
-  find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+  # Preserve the MobileContainerManager metadata file; deleting it breaks future
+  # bundle-id -> container resolution for data and App Group containers.
+  find "$dir" -mindepth 1 -maxdepth 1 ! -name "$MCM_METADATA_NAME" -exec rm -rf {} + 2>/dev/null || true
+}
+
+restore_dir_contents() {
+  local src="$1" dst="$2" saved_meta=""
+  [ -d "$src" ] || return 0
+  mkdir -p "$dst"
+  if [ -f "$dst/$MCM_METADATA_NAME" ]; then
+    saved_meta="/tmp/vphone-mcm-meta.$$.plist"
+    cp -p "$dst/$MCM_METADATA_NAME" "$saved_meta" 2>/dev/null || saved_meta=""
+  fi
+  clean_dir_contents "$dst"
+  (cd "$src" && tar -cf - .) | (cd "$dst" && tar -xpf -)
+  # If the current container already had metadata, keep the current metadata
+  # instead of overwriting it with metadata from a backup made on another UUID.
+  if [ -n "$saved_meta" ] && [ -f "$saved_meta" ]; then
+    cp -p "$saved_meta" "$dst/$MCM_METADATA_NAME" 2>/dev/null || true
+    rm -f "$saved_meta" 2>/dev/null || true
+  fi
 }
 
 resolve_app() {
@@ -174,7 +195,9 @@ resolve_app() {
     fi
   done < <(find /var/mobile/Containers/Data/Application /private/var/mobile/Containers/Data/Application -maxdepth 2 -name .com.apple.mobile_container_manager.metadata.plist -type f 2>/dev/null | sort -u)
 
-  [ -n "$APP_DATA_CONTAINER" ] || warn "data container not found for $BUNDLE_ID; restore/new-device will create no app data container"
+  if [ -z "$APP_DATA_CONTAINER" ] && [ "${RESOLVE_APP_WARN_MISSING_DATA:-1}" = "1" ]; then
+    warn "data container not found for $BUNDLE_ID; restore/new-device will create no app data container"
+  fi
 }
 
 entitlements_xml() {
@@ -313,7 +336,7 @@ clean_keychain() {
   inclause="$(sql_in_clause_from_file "$ACCESS_GROUPS_FILE")"
   [ -n "$inclause" ] || return 0
   cp "$db" "/tmp/keychain-2.vphone-appstate.$$.bak" 2>/dev/null || true
-  sqlite3 "$db" <<SQL || warn "keychain clean failed"
+  sqlite3 "$db" >/dev/null <<SQL || warn "keychain clean failed"
 PRAGMA foreign_keys=OFF;
 BEGIN IMMEDIATE;
 DELETE FROM genp WHERE agrp IN ($inclause);
@@ -541,15 +564,23 @@ restore_action() {
 
   # shellcheck disable=SC1090
   . "$STAGE/manifest.env"
+  local BACKUP_APP_DATA_CONTAINER="${APP_DATA_CONTAINER:-}"
   [ "${BUNDLE_ID:-}" = "$2" ] || die "backup bundle mismatch: archive=${BUNDLE_ID:-?}, requested=$2"
   BUNDLE_ID="$2"
+  local old_resolve_warn="${RESOLVE_APP_WARN_MISSING_DATA:-1}"
+  RESOLVE_APP_WARN_MISSING_DATA=0
   prepare_for_new_or_restore
+  RESOLVE_APP_WARN_MISSING_DATA="$old_resolve_warn"
+
+  if [ -z "$APP_DATA_CONTAINER" ] && [ -n "$BACKUP_APP_DATA_CONTAINER" ] && [ -d "$BACKUP_APP_DATA_CONTAINER" ]; then
+    APP_DATA_CONTAINER="$BACKUP_APP_DATA_CONTAINER"
+    warn "current data container metadata is missing; using backup manifest path: $APP_DATA_CONTAINER"
+  fi
 
   if [ -n "$APP_DATA_CONTAINER" ] && [ -d "$STAGE/app_data" ]; then
     mkdir -p "$APP_DATA_CONTAINER"
     say "restore app data: $APP_DATA_CONTAINER"
-    clean_dir_contents "$APP_DATA_CONTAINER"
-    (cd "$STAGE/app_data" && tar -cf - .) | (cd "$APP_DATA_CONTAINER" && tar -xpf -)
+    restore_dir_contents "$STAGE/app_data" "$APP_DATA_CONTAINER"
     chown -R mobile:mobile "$APP_DATA_CONTAINER" 2>/dev/null || true
   fi
 
@@ -575,8 +606,7 @@ restore_action() {
       if [ -d "$STAGE/group_containers/$gsafe" ]; then
         mkdir -p "$target"
         say "restore group container: $gid -> $target"
-        clean_dir_contents "$target"
-        (cd "$STAGE/group_containers/$gsafe" && tar -cf - .) | (cd "$target" && tar -xpf -)
+        restore_dir_contents "$STAGE/group_containers/$gsafe" "$target"
         chown -R mobile:mobile "$target" 2>/dev/null || true
       fi
     done < "$BACKUP_GROUPS_FILE"
