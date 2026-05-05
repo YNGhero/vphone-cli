@@ -92,6 +92,38 @@ vpa_default_stage() {
   print -r -- "/var/mobile/Library/vphone_app_state/staging/${action}-${safe}-${ts}-$$"
 }
 
+vpa_instance_name_for_port() {
+  local port="$1"
+  if [[ -n "${VPHONE_INSTANCE_NAME:-}" ]]; then
+    print -r -- "$VPHONE_INSTANCE_NAME"
+    return 0
+  fi
+  local env p n
+  for env in "${PROJECT_ROOT}"/vm.instances/*/instance.env(N); do
+    p="$(
+      (
+        emulate -L zsh
+        setopt no_unset
+        source "$env"
+        print -r -- "${SSH_LOCAL_PORT:-}"
+      )
+    )"
+    if [[ "$p" == "$port" ]]; then
+      n="$(
+        (
+          emulate -L zsh
+          setopt no_unset
+          source "$env"
+          print -r -- "${INSTANCE_NAME:-${env:h:t}}"
+        )
+      )"
+      print -r -- "${n:-${env:h:t}}"
+      return 0
+    fi
+  done
+  print -r -- "ssh-${port}"
+}
+
 vpa_parse_port_first() {
   local first="${1:-}"
   if [[ "$first" == <-> ]]; then

@@ -22,6 +22,12 @@ root / alpine
 VPHONE_SSH_PASSWORD='你的密码' zsh scripts/app_backup.sh 2224 com.example.app test
 ```
 
+备份文件名默认会自动带上实例名。脚本会按 SSH 端口从 `vm.instances/*/instance.env` 反查实例名；如果没有找到，会退回为 `ssh-<端口>`。也可以手动指定：
+
+```bash
+zsh scripts/app_backup.sh 2224 com.example.app before-login --instance-name phone-01
+```
+
 ## 1. 备份指定 App
 
 ```bash
@@ -31,7 +37,7 @@ zsh scripts/app_backup.sh 2224 com.example.app before-login
 输出示例：
 
 ```text
-app_backups/com.example.app/20260506-120000-before-login.tar.gz
+app_backups/com.example.app/phone-01-20260506-120000-before-login.tar.gz
 ```
 
 备份内容包括：
@@ -90,7 +96,7 @@ zsh scripts/app_new_device.sh 2224 com.example.app --yes
 ## 3. 还原指定 App
 
 ```bash
-zsh scripts/app_restore.sh 2224 com.example.app app_backups/com.example.app/20260506-120000-before-login.tar.gz --yes
+zsh scripts/app_restore.sh 2224 com.example.app app_backups/com.example.app/phone-01-20260506-120000-before-login.tar.gz --yes
 ```
 
 可选参数：

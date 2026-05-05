@@ -415,6 +415,7 @@ write_manifest() {
   local manifest="$STAGE/manifest.env"
   : > "$manifest"
   write_kv BUNDLE_ID "$BUNDLE_ID" "$manifest"
+  write_kv INSTANCE_NAME "${APP_BACKUP_INSTANCE_NAME:-}" "$manifest"
   write_kv DISPLAY_NAME "${APP_DISPLAY_NAME:-}" "$manifest"
   write_kv APP_BUNDLE_PATH "${APP_BUNDLE_PATH:-}" "$manifest"
   write_kv APP_EXECUTABLE "${APP_EXECUTABLE:-}" "$manifest"
@@ -423,6 +424,7 @@ write_manifest() {
   write_kv CREATED_AT "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$manifest"
   {
     echo "Bundle: $BUNDLE_ID"
+    echo "Instance: ${APP_BACKUP_INSTANCE_NAME:-}"
     echo "Name: ${APP_DISPLAY_NAME:-}"
     echo "App bundle: ${APP_BUNDLE_PATH:-}"
     echo "Data: ${APP_DATA_CONTAINER:-}"
@@ -436,6 +438,7 @@ write_manifest() {
 
 backup_action() {
   local backup_name="${4:-}"
+  APP_BACKUP_INSTANCE_NAME="${5:-}"
   rm -rf "$STAGE"
   mkdir -p "$STAGE"
   resolve_app
