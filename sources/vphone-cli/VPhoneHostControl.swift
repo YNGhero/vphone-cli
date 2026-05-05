@@ -137,7 +137,7 @@ class VPhoneHostControl {
 
     /// Capture current screen as a small grayscale JPEG, returned as base64.
     private func captureCompactScreenshot() async -> String? {
-        guard let recorder = screenRecorder, let view = captureView, view.window != nil else {
+        guard let recorder = screenRecorder, let view = captureView else {
             return nil
         }
 
@@ -313,8 +313,7 @@ class VPhoneHostControl {
                 defer { semaphore.signal() }
                 guard let controller,
                       let recorder = controller.screenRecorder,
-                      let view = controller.captureView,
-                      view.window != nil
+                      let view = controller.captureView
                 else {
                     result.error = "no active VM view"
                     return

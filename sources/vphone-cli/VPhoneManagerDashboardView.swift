@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -442,23 +443,7 @@ struct VPhoneInstanceCardView: View {
     }
 
     private var preview: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(previewGradient)
-                .frame(height: 142)
-
-            VStack(spacing: 8) {
-                Image(systemName: record.status == .running ? "iphone.gen3.radiowaves.left.and.right" : "iphone.gen3")
-                    .font(.system(size: 34, weight: .light))
-                    .foregroundStyle(record.status == .running ? Color.green : Color.secondary)
-                Text(record.status.rawValue)
-                    .font(.system(.headline, design: .rounded))
-                Text(record.displayPorts)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
+        VPhoneInstanceLivePreviewView(record: record, previewGradient: previewGradient)
     }
 
     private var previewGradient: LinearGradient {
@@ -624,5 +609,207 @@ private func statusColor(_ status: VPhoneInstanceStatus) -> Color {
     case .starting: .orange
     case .stopped: .secondary
     case .incomplete: .red
+    }
+}
+
+// MARK: - Live Card Preview
+
+struct VPhoneInstanceLivePreviewView: View {
+    let record: VPhoneInstanceRecord
+    let previewGradient: LinearGradient
+
+    @State private var image: NSImage?
+    @State private var lastError: String?
+
+    private var canPreview: Bool {
+        record.status == .running || record.status == .starting
+    }
+
+    private var taskID: String {
+        "\(record.id)-\(record.status.rawValue)-\(record.socketExists)"
+    }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(previewGradient)
+
+            if canPreview, let image {
+                liveImage(image)
+            } else {
+                placeholder
+            }
+        }
+        .frame(height: 142)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.white.opacity(canPreview && image != nil ? 0.14 : 0), lineWidth: 1)
+        )
+        .task(id: taskID) {
+            await previewLoop()
+        }
+    }
+
+    private func liveImage(_ image: NSImage) -> some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.88)
+
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.medium)
+                .scaledToFit()
+                .padding(.vertical, 6)
+                .padding(.horizontal, 38)
+
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 6, height: 6)
+                Text("实时预览 · 只读")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.86))
+                Spacer()
+                Text(record.sshPort.map { "SSH \($0)" } ?? "SSH -")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.70))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color.black.opacity(0.45))
+        }
+    }
+
+    private var placeholder: some View {
+        VStack(spacing: 8) {
+            Image(systemName: record.status == .running ? "iphone.gen3.radiowaves.left.and.right" : "iphone.gen3")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(record.status == .running ? Color.green : Color.secondary)
+            Text(record.status.rawValue)
+                .font(.system(.headline, design: .rounded))
+            Text(placeholderSubtitle)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+    }
+
+    private var placeholderSubtitle: String {
+        if canPreview {
+            if let lastError {
+                return lastError
+            }
+            return record.socketExists ? "等待实时画面..." : "打开 GUI 后显示实时画面"
+        }
+        return record.displayPorts
+    }
+
+    @MainActor
+    private func previewLoop() async {
+        image = nil
+        lastError = nil
+        guard canPreview else { return }
+
+        while !Task.isCancelled {
+            if let data = await VPhoneManagerPreviewClient.captureJPEGData(vmURL: record.vmURL),
+               let nextImage = NSImage(data: data)
+            {
+                image = nextImage
+                lastError = nil
+            } else if image == nil {
+                lastError = record.socketExists ? "暂时无法获取画面" : "打开 GUI 后显示实时画面"
+            }
+
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+    }
+}
+
+private enum VPhoneManagerPreviewClient {
+    static func captureJPEGData(vmURL: URL) async -> Data? {
+        let socketPath = vmURL.appendingPathComponent("vphone.sock").path
+        return await Task.detached(priority: .utility) {
+            captureJPEGDataSync(socketPath: socketPath)
+        }.value
+    }
+
+    private static func captureJPEGDataSync(socketPath: String) -> Data? {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return nil }
+
+        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        defer { Darwin.close(fd) }
+
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(socketPath.utf8CString)
+        guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else { return nil }
+
+        withUnsafeMutablePointer(to: &addr.sun_path) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dst in
+                for (index, byte) in pathBytes.enumerated() {
+                    dst[index] = byte
+                }
+            }
+        }
+
+        let connected = withUnsafePointer(to: &addr) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                Darwin.connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connected == 0 else { return nil }
+
+        let request = #"{"t":"screenshot","screen":false}"# + "\n"
+        guard writeAll(fd: fd, data: Data(request.utf8)) else { return nil }
+        guard let line = readLine(fd: fd, maxBytes: 1_500_000),
+              let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              (json["ok"] as? Bool) == true,
+              let base64 = json["image"] as? String,
+              let imageData = Data(base64Encoded: base64)
+        else {
+            return nil
+        }
+
+        return imageData
+    }
+
+    private static func writeAll(fd: Int32, data: Data) -> Bool {
+        data.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else { return false }
+            var offset = 0
+            while offset < rawBuffer.count {
+                let written = Darwin.write(fd, baseAddress.advanced(by: offset), rawBuffer.count - offset)
+                if written <= 0 { return false }
+                offset += written
+            }
+            return true
+        }
+    }
+
+    private static func readLine(fd: Int32, maxBytes: Int) -> Data? {
+        var accumulated = Data()
+        var buffer = [UInt8](repeating: 0, count: 8192)
+
+        while accumulated.count < maxBytes {
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                Darwin.read(fd, rawBuffer.baseAddress, rawBuffer.count)
+            }
+            if count <= 0 { break }
+
+            if let newlineIndex = buffer[..<count].firstIndex(of: 0x0A) {
+                accumulated.append(buffer, count: newlineIndex)
+                return accumulated
+            }
+
+            accumulated.append(buffer, count: count)
+        }
+
+        return accumulated.isEmpty ? nil : accumulated
     }
 }
