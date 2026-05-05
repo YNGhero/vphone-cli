@@ -106,7 +106,8 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if !cli.noGraphics {
-            let projectRootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            let vmDirectoryURL = options.configURL.deletingLastPathComponent().standardizedFileURL
+            let projectRootURL = Self.projectRootURL(forVMDirectory: vmDirectoryURL)
             let keyHelper = VPhoneKeyHelper(vm: vm, control: control)
             let wc = VPhoneWindowController()
             wc.showWindow(
@@ -134,7 +135,7 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
 
             let mc = VPhoneMenuController(keyHelper: keyHelper, control: control)
             mc.vm = vm
-            mc.vmDirectoryURL = options.configURL.deletingLastPathComponent()
+            mc.vmDirectoryURL = vmDirectoryURL
             mc.projectRootURL = projectRootURL
             mc.captureView = wc.captureView
             mc.touchIDMonitor = wc.touchIDMonitor
@@ -298,5 +299,13 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
         // virtual phone alive for background automation/multi-instance use.
         // Real shutdown is handled by scripts/stop_vphone_instance.sh or Cmd-Q.
         false
+    }
+
+    private static func projectRootURL(forVMDirectory vmDirectoryURL: URL) -> URL {
+        let parent = vmDirectoryURL.deletingLastPathComponent()
+        if parent.lastPathComponent == "vm.instances" {
+            return parent.deletingLastPathComponent().standardizedFileURL
+        }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL
     }
 }

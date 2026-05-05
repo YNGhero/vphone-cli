@@ -42,6 +42,9 @@ enum VPhoneWindowArranger {
                     count += 1
                 }
             }
+            if count < requests.count {
+                count = max(count, arrangeVisibleWindowsWithSystemEvents(frames: frames, screenFrame: screenFrame))
+            }
             return count
         }.value
 
@@ -90,6 +93,63 @@ enum VPhoneWindowArranger {
         }
         data.append(contentsOf: [0x0A])
         return VPhoneWindowArrangeRequest(socketPath: socketPath, data: data)
+    }
+
+    private static func arrangeVisibleWindowsWithSystemEvents(frames: [NSRect], screenFrame: NSRect) -> Int {
+        guard !frames.isEmpty else { return 0 }
+
+        let positions = frames.map { frame in
+            let x = Int(frame.minX.rounded())
+            let y = Int((screenFrame.maxY - frame.maxY).rounded())
+            return "{\(x), \(y)}"
+        }.joined(separator: ", ")
+        let sizes = frames.map { frame in
+            "{\(Int(frame.width.rounded())), \(Int(frame.height.rounded()))}"
+        }.joined(separator: ", ")
+
+        let script = """
+        set framePositions to {\(positions)}
+        set frameSizes to {\(sizes)}
+        set movedCount to 0
+        set frameIndex to 1
+        tell application "System Events"
+            repeat with proc in (every application process whose name is "vphone-cli")
+                repeat with win in windows of proc
+                    set winName to ""
+                    try
+                        set winName to name of win as text
+                    end try
+                    if winName starts with "VPHONE" then
+                        if frameIndex ≤ (count of framePositions) then
+                            set position of win to item frameIndex of framePositions
+                            set size of win to item frameIndex of frameSizes
+                            set movedCount to movedCount + 1
+                            set frameIndex to frameIndex + 1
+                        end if
+                    end if
+                end repeat
+            end repeat
+        end tell
+        return movedCount
+        """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return 0 }
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let text = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return Int(text) ?? 0
+        } catch {
+            return 0
+        }
     }
 }
 

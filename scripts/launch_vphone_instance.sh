@@ -27,7 +27,9 @@ BOOT_FIFO="${LOG_DIR}/boot.stdin"
 BOOT_PID_FILE="${LOG_DIR}/boot.pid"
 KEEPALIVE_PID_FILE="${LOG_DIR}/boot_stdin_keepalive.pid"
 LOCK_DIR="${VM_DIR_ABS}/.launch.lock"
+BUILD_LOCK_DIR="${PROJECT_ROOT}/.build/.vphone-boot-artifacts.lock"
 VM_ALREADY_RUNNING=0
+BUILD_LOCK_HELD=0
 
 export PATH="${PROJECT_ROOT}/.tools/shims:${PROJECT_ROOT}/.tools/bin:${PROJECT_ROOT}/.venv/bin:${HOME}/Library/Python/3.9/bin:${HOME}/Library/Python/3.14/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
@@ -81,7 +83,23 @@ cleanup_launch_lock() {
     /bin/rm -rf "$LOCK_DIR" 2>/dev/null || true
   fi
 }
-trap cleanup_launch_lock EXIT INT TERM
+
+cleanup_build_lock() {
+  (( BUILD_LOCK_HELD )) || return 0
+  [[ -d "$BUILD_LOCK_DIR" ]] || return 0
+  local owner=""
+  owner="$(cat "${BUILD_LOCK_DIR}/pid" 2>/dev/null || true)"
+  if [[ "$owner" == "$$" ]]; then
+    /bin/rm -rf "$BUILD_LOCK_DIR" 2>/dev/null || true
+  fi
+  BUILD_LOCK_HELD=0
+}
+
+cleanup_all() {
+  cleanup_build_lock
+  cleanup_launch_lock
+}
+trap cleanup_all EXIT INT TERM
 
 ensure_single_launcher() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -102,6 +120,52 @@ ensure_single_launcher() {
   /bin/rm -rf "$LOCK_DIR" 2>/dev/null || true
   mkdir "$LOCK_DIR" 2>/dev/null || die "another launch/open operation is already running for ${INSTANCE_NAME}"
   print -r -- "$$" > "${LOCK_DIR}/pid"
+}
+
+acquire_build_lock() {
+  mkdir -p "${PROJECT_ROOT}/.build"
+
+  local waited=0 owner="" cmd=""
+  while true; do
+    if mkdir "$BUILD_LOCK_DIR" 2>/dev/null; then
+      print -r -- "$$" > "${BUILD_LOCK_DIR}/pid"
+      BUILD_LOCK_HELD=1
+      return 0
+    fi
+
+    owner="$(cat "${BUILD_LOCK_DIR}/pid" 2>/dev/null || true)"
+    if [[ "$owner" == <-> ]] && kill -0 "$owner" 2>/dev/null; then
+      if (( waited == 0 )); then
+        say "waiting for shared build/sign lock (pid=${owner})"
+      fi
+      sleep 1
+      waited=$(( waited + 1 ))
+      continue
+    fi
+
+    cmd=""
+    [[ "$owner" == <-> ]] && cmd="$(/bin/ps -p "$owner" -o command= 2>/dev/null || true)"
+    warn "removing stale shared build/sign lock: ${BUILD_LOCK_DIR}${cmd:+ (${cmd})}"
+    /bin/rm -rf "$BUILD_LOCK_DIR" 2>/dev/null || true
+  done
+}
+
+release_build_lock() {
+  cleanup_build_lock
+}
+
+ensure_boot_artifacts() {
+  acquire_build_lock
+  say "preparing shared app bundle/vphoned for ${INSTANCE_NAME}"
+  make VM_DIR="$VM_DIR_ABS" bundle vphoned boot_binary_check
+  local shared_app="${PROJECT_ROOT}/.build/vphone-cli.app"
+  local instance_app="${VM_DIR_ABS}/.vphone-cli.app"
+  local tmp_app="${VM_DIR_ABS}/.vphone-cli.app.tmp.$$"
+  /bin/rm -rf "$tmp_app"
+  /usr/bin/ditto "$shared_app" "$tmp_app"
+  /bin/rm -rf "$instance_app"
+  /bin/mv "$tmp_app" "$instance_app"
+  release_build_lock
 }
 
 has_truthy() {
@@ -299,6 +363,7 @@ boot_vm_if_needed() {
   if [[ -n "${VPHONE_INSTALL_IPA:-}" ]]; then
     say "will auto-install IPA/TIPA after guest connects: ${VPHONE_INSTALL_IPA}"
   fi
+  ensure_boot_artifacts
   kill_pid_file "$KEEPALIVE_PID_FILE"
   rm -f "$BOOT_FIFO"
   mkfifo "$BOOT_FIFO"
@@ -307,14 +372,15 @@ boot_vm_if_needed() {
   nohup tail -f /dev/null > "$BOOT_FIFO" 2>/dev/null &
   print -r -- "$!" > "$KEEPALIVE_PID_FILE"
 
+  local boot_binary="${VM_DIR_ABS}/.vphone-cli.app/Contents/MacOS/vphone-cli"
   nohup zsh -c '
-    cd "$1"
+    cd "$2"
+    args=(--config ./config.plist)
     if [[ -n "$5" ]]; then
-      exec make VM_DIR="$2" INSTALL_IPA="$5" boot < "$3" > "$4" 2>&1
-    else
-      exec make VM_DIR="$2" boot < "$3" > "$4" 2>&1
+      args+=(--install-ipa "$5")
     fi
-  ' _ "$PROJECT_ROOT" "$VM_DIR_ABS" "$BOOT_FIFO" "$BOOT_LOG" "${VPHONE_INSTALL_IPA:-}" >/dev/null 2>&1 &
+    exec "$1" "${args[@]}" < "$3" > "$4" 2>&1
+  ' _ "$boot_binary" "$VM_DIR_ABS" "$BOOT_FIFO" "$BOOT_LOG" "${VPHONE_INSTALL_IPA:-}" >/dev/null 2>&1 &
   print -r -- "$!" > "$BOOT_PID_FILE"
 
   sleep 3
