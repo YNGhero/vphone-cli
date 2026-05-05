@@ -6,6 +6,10 @@ set -euo pipefail
 SCRIPT_DIR="${0:A:h}"
 PROJECT_ROOT="${SCRIPT_DIR:h}"
 cd "$PROJECT_ROOT"
+source "${PROJECT_ROOT}/scripts/vphone_guest_config.sh"
+if [[ -f "${PROJECT_ROOT}/.env" ]]; then
+  vphone_source_config_preserving_env "${PROJECT_ROOT}/.env"
+fi
 
 export PATH="${PROJECT_ROOT}/.tools/shims:${PROJECT_ROOT}/.tools/bin:${PROJECT_ROOT}/.venv/bin:${HOME}/Library/Python/3.9/bin:${HOME}/Library/Python/3.14/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
@@ -56,10 +60,17 @@ if ! make build >> "$LOG_FILE" 2>&1; then
   exit 1
 fi
 
-if ! "${PROJECT_ROOT}/.build/release/vphone-cli" --help >/dev/null 2>&1; then
+if ! vphone_release_launchable "${PROJECT_ROOT}/.build/release/vphone-cli"; then
   warn "signed vphone-cli is not launchable yet; trying amfidont"
+  vphone_setup_sudo_password 0 >> "$LOG_FILE" 2>&1 || true
   if ! zsh "${PROJECT_ROOT}/scripts/start_amfidont_for_vphone.sh" >> "$LOG_FILE" 2>&1; then
     warn "amfidont setup failed; log=${LOG_FILE}"
+    tail -120 "$LOG_FILE" >&2 || true
+    exit 1
+  fi
+  sleep 1
+  if ! vphone_release_launchable "${PROJECT_ROOT}/.build/release/vphone-cli"; then
+    warn "signed vphone-cli still not launchable after amfidont; log=${LOG_FILE}"
     tail -120 "$LOG_FILE" >&2 || true
     exit 1
   fi

@@ -75,6 +75,36 @@ vphone_prompt_secret() {
   print -r -- "$answer"
 }
 
+
+vphone_run_with_timeout() {
+  local timeout_seconds="${1:-5}"
+  shift
+  local max_ticks=$(( timeout_seconds * 5 ))
+  local tick=0
+  "$@" >/dev/null 2>&1 &
+  local pid=$!
+  while (( tick < max_ticks )); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" >/dev/null 2>&1
+      return $?
+    fi
+    sleep 0.2
+    tick=$(( tick + 1 ))
+  done
+  kill -TERM "$pid" 2>/dev/null || true
+  sleep 0.5
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" >/dev/null 2>&1 || true
+  return 124
+}
+
+vphone_release_launchable() {
+  local release_bin="$1"
+  local timeout_seconds="${2:-${VPHONE_LAUNCH_CHECK_TIMEOUT:-4}}"
+  [[ -x "$release_bin" ]] || return 1
+  vphone_run_with_timeout "$timeout_seconds" "$release_bin" --help
+}
+
 vphone_setup_sudo_password() {
   local prompt="${1:-1}"
 
@@ -128,7 +158,7 @@ vphone_host_ensure_amfidont() {
   vphone_gc_truthy "${VPHONE_SKIP_AMFIDONT:-0}" && return 0
 
   local release_bin="${project_root}/.build/release/vphone-cli"
-  if [[ -x "$release_bin" ]] && "$release_bin" --help >/dev/null 2>&1; then
+  if vphone_release_launchable "$release_bin"; then
     return 0
   fi
 
@@ -155,7 +185,7 @@ vphone_host_ensure_amfidont() {
 
   if true; then
     sleep 1
-    if [[ -x "$release_bin" ]] && "$release_bin" --help >/dev/null 2>&1; then
+    if vphone_release_launchable "$release_bin"; then
       vphone_gc_ok "amfidont active; signed vphone-cli can launch"
     else
       vphone_gc_warn "amfidont started, but signed vphone-cli still fails preflight"

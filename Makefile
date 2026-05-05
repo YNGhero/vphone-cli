@@ -270,12 +270,32 @@ boot_host_preflight: build
 define BOOT_BINARY_CHECK
 	@zsh $(SCRIPTS)/boot_host_preflight.sh $(1)
 	@tmp_log="$$(mktemp -t vphone-boot-preflight.XXXXXX)"; \
+	timeout_seconds="$${VPHONE_LAUNCH_CHECK_TIMEOUT:-5}"; \
+	ticks=$$((timeout_seconds * 5)); \
+	i=0; rc=""; \
 	set +e; \
-	"$(CURDIR)/$(BINARY)" --help >"$$tmp_log" 2>&1; \
-	rc=$$?; \
+	"$(CURDIR)/$(BINARY)" --help >"$$tmp_log" 2>&1 & \
+	pid=$$!; \
+	while kill -0 $$pid >/dev/null 2>&1; do \
+		if [ $$i -ge $$ticks ]; then \
+			kill -TERM $$pid >/dev/null 2>&1 || true; \
+			sleep 0.5; \
+			kill -KILL $$pid >/dev/null 2>&1 || true; \
+			wait $$pid >/dev/null 2>&1 || true; \
+			rc=124; \
+			break; \
+		fi; \
+		sleep 0.2; \
+		i=$$((i + 1)); \
+	done; \
+	if [ -z "$$rc" ]; then wait $$pid; rc=$$?; fi; \
 	set -e; \
 	if [ $$rc -ne 0 ]; then \
-		echo "Error: signed vphone-cli failed to launch (exit $$rc)." >&2; \
+		if [ $$rc -eq 124 ]; then \
+			echo "Error: signed vphone-cli launch check timed out after $${timeout_seconds}s." >&2; \
+		else \
+			echo "Error: signed vphone-cli failed to launch (exit $$rc)." >&2; \
+		fi; \
 		echo "Check private virtualization entitlement support and ensure SIP/AMFI are disabled on the host." >&2; \
 		echo "Repo workaround: start the AMFI bypass helper with 'make amfidont_allow_vphone' and retry." >&2; \
 		if [ -s "$$tmp_log" ]; then \
