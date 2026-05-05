@@ -390,10 +390,10 @@ terminate_app() {
 relaunch_app() {
   local launched=0
   if command -v open >/dev/null 2>&1; then
-    launchctl asuser 501 open -b "$BUNDLE_ID" >/dev/null 2>&1 && launched=1 || true
+    open -b "$BUNDLE_ID" >/dev/null 2>&1 && launched=1 || true
   fi
   if [ "$launched" = 0 ] && command -v uiopen >/dev/null 2>&1; then
-    launchctl asuser 501 uiopen "$BUNDLE_ID://" >/dev/null 2>&1 && launched=1 || true
+    uiopen --bundleid "$BUNDLE_ID" >/dev/null 2>&1 && launched=1 || true
   fi
   if [ "$launched" = 1 ]; then ok "relaunch requested: $BUNDLE_ID"; else warn "relaunch not available; open app from GUI manually"; fi
 }
@@ -410,23 +410,53 @@ generate_profile() {
   local dir="/var/mobile/vphone_app_profiles"
   local out="$dir/${BUNDLE_ID}.json"
   mkdir -p "$dir"
-  local idfa idfv oudid serial wifi name
-  idfa="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "$RANDOM-$RANDOM-$RANDOM")"
-  idfv="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "$RANDOM-$RANDOM-$RANDOM")"
-  oudid="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "$RANDOM-$RANDOM-$RANDOM")"
+  random_uuid() {
+    local h
+    h="$(hexdump -n 16 -e '16/1 "%02x"' /dev/urandom 2>/dev/null || true)"
+    if [ "${#h}" -lt 32 ]; then
+      h="$(printf '%08x%08x%08x%08x' "$RANDOM$RANDOM" "$RANDOM$RANDOM" "$RANDOM$RANDOM" "$RANDOM$RANDOM" | tr -cd '0-9a-f' | head -c 32)"
+    fi
+    h="$(printf '%s' "$h" | tr '[:lower:]' '[:upper:]')"
+    printf '%s-%s-4%s-8%s-%s\n' "${h:0:8}" "${h:8:4}" "${h:13:3}" "${h:17:3}" "${h:20:12}"
+  }
+  local idfa idfv oudid serial wifi bt name product_type model system_name system_version build_version locale_identifier time_zone
+  idfa="$(random_uuid)"
+  idfv="$(random_uuid)"
+  oudid="$(random_uuid)"
   serial="VP$(date +%s)$(printf '%04d' $((RANDOM % 10000)))"
   wifi="$(printf '02:%02x:%02x:%02x:%02x:%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))"
+  bt="$(printf '02:%02x:%02x:%02x:%02x:%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))"
   name="iPhone"
+  product_type="${VPHONE_PROFILE_PRODUCT_TYPE:-iPhone17,3}"
+  model="${VPHONE_PROFILE_MODEL:-iPhone}"
+  system_name="${VPHONE_PROFILE_SYSTEM_NAME:-iOS}"
+  system_version="${VPHONE_PROFILE_SYSTEM_VERSION:-}"
+  build_version="${VPHONE_PROFILE_BUILD_VERSION:-}"
+  locale_identifier="${VPHONE_PROFILE_LOCALE:-}"
+  time_zone="${VPHONE_PROFILE_TIMEZONE:-}"
   cat > "$out" <<JSON
 {
   "enabled": true,
   "bundle_id": "$BUNDLE_ID",
   "idfa": "$idfa",
   "idfv": "$idfv",
+  "udid": "$oudid",
   "oudid": "$oudid",
   "serial": "$serial",
   "wifiAddress": "$wifi",
+  "bluetoothAddress": "$bt",
   "deviceName": "$name",
+  "model": "$model",
+  "localizedModel": "$model",
+  "productType": "$product_type",
+  "systemName": "$system_name",
+  "systemVersion": "$system_version",
+  "buildVersion": "$build_version",
+  "localeIdentifier": "$locale_identifier",
+  "preferredLanguages": [],
+  "timeZone": "$time_zone",
+  "advertisingTrackingEnabled": true,
+  "trackingAuthorized": true,
   "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 JSON

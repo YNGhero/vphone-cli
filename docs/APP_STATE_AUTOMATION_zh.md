@@ -91,7 +91,7 @@ zsh scripts/app_new_device.sh 2224 com.example.app --yes
 8. 重启 `cfprefsd` / `securityd`。
 9. 尝试重新打开目标 App。
 
-注意：当前 profile 只是为后续自研 tweak 预留。没有安装对应 tweak 时，IDFA/IDFV/Serial 等运行时伪装不会自动生效，但 App 数据清理和 keychain 清理已经生效。
+注意：profile 需要配合 `VPhoneProfileTweak` 才会在 App 运行时生效。安装和字段说明见 `docs/ROOTLESS_PROFILE_TWEAK_zh.md`。如果没有安装 tweak，App 数据清理和 keychain 清理仍然生效，但 IDFA/IDFV/Serial 等运行时伪装不会生效。
 
 ## 3. 还原指定 App
 
@@ -187,10 +187,10 @@ sshpass -p alpine ssh -p 2224 root@127.0.0.1 \
 备份 / 清理 / 还原 App 状态
 ```
 
-YOY 里的运行时设备参数伪装，需要后续增加自研 rootless tweak 来读取：
+运行时设备参数伪装已经开始由 `VPhoneProfileTweak` 承担。当前第一版已读取：
 
 ```text
 /var/mobile/vphone_app_profiles/<bundle-id>.json
 ```
 
-然后对指定 bundle id hook IDFA、IDFV、MobileGestalt、位置等接口。
+并 hook IDFA、IDFV、UIDevice、MobileGestalt、语言区域和时区等常见接口。后续可继续扩展位置、WebView 指纹、越狱检测绕过等。
