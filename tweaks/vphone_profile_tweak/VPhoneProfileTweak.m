@@ -232,9 +232,7 @@ static CFTypeRef VPCopyGestaltValue(CFStringRef cfKey) {
                [key isEqualToString:@"OpaqueDeviceID"]) {
         value = VPString(@"udid") ?: VPString(@"oudid");
     } else if ([key isEqualToString:@"WifiAddress"] ||
-               [key isEqualToString:@"WiFiAddress"] ||
-               [key isEqualToString:@"WifiAddressData"] ||
-               [key isEqualToString:@"WiFiAddressData"]) {
+               [key isEqualToString:@"WiFiAddress"]) {
         value = VPString(@"wifiAddress");
     } else if ([key isEqualToString:@"BluetoothAddress"]) {
         value = VPString(@"bluetoothAddress");
@@ -323,8 +321,9 @@ static void VPHookMobileGestalt(void) {
     void *sym = mg ? dlsym(mg, "MGCopyAnswer") : dlsym(RTLD_DEFAULT, "MGCopyAnswer");
     if (sym) hook(sym, (void *)rep_MGCopyAnswer, (void **)&orig_MGCopyAnswer);
 
-    sym = mg ? dlsym(mg, "MGCopyAnswerWithError") : dlsym(RTLD_DEFAULT, "MGCopyAnswerWithError");
-    if (sym) hook(sym, (void *)rep_MGCopyAnswerWithError, (void **)&orig_MGCopyAnswerWithError);
+    // Keep MGCopyAnswerWithError disabled for now. Its private signature has
+    // changed across iOS releases, and an arity mismatch can stall app launch.
+    // MGCopyAnswer covers the common app-side MobileGestalt reads we need.
 }
 
 __attribute__((constructor))
@@ -332,7 +331,9 @@ static void VPhoneProfileTweakInit(void) {
     @autoreleasepool {
         if (!VPLoadProfile()) return;
         VPHookObjectiveC();
-        VPHookMobileGestalt();
+        if (VPBool(@"hookMobileGestalt", NO)) {
+            VPHookMobileGestalt();
+        }
         VPLog(@"enabled bundle=%@ profile=%@", VPBundleID, VPProfilePath);
     }
 }

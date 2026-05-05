@@ -50,6 +50,14 @@ zsh scripts/app_profile_set.sh 2224 com.burbn.instagram \
   --timezone America/Los_Angeles
 ```
 
+如果目标 App 需要读取序列号、Wi-Fi MAC、ProductType 等 MobileGestalt 字段，可以额外开启：
+
+```bash
+zsh scripts/app_profile_set.sh 2224 com.burbn.instagram --hook-mobilegestalt
+```
+
+`--hook-mobilegestalt` 会 hook `MGCopyAnswer`。默认不开启是为了兼容性；确认目标 App 稳定后再打开。
+
 也可以上传自己准备好的 JSON：
 
 ```bash
@@ -92,7 +100,8 @@ zsh scripts/app_new_device.sh 2224 com.burbn.instagram --backup-before --yes
 通过 ElleKit/Substrate 的 `MSHookFunction` hook：
 
 - `MGCopyAnswer`
-- `MGCopyAnswerWithError`
+
+说明：`MGCopyAnswerWithError` 暂不 hook。它在不同 iOS 版本上的私有签名不稳定，错误 hook 可能导致目标 App 启动 watchdog 卡死。
 
 当前覆盖的 key 包括：
 

@@ -457,6 +457,7 @@ generate_profile() {
   "timeZone": "$time_zone",
   "advertisingTrackingEnabled": true,
   "trackingAuthorized": true,
+  "hookMobileGestalt": false,
   "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 JSON

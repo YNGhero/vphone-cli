@@ -27,6 +27,7 @@ Options:
   --locale <id>            NSLocale currentLocale, e.g. zh_CN/en_US
   --languages <csv>        NSLocale preferredLanguages, e.g. zh-Hans,en
   --timezone <name>        NSTimeZone, e.g. Asia/Shanghai
+  --hook-mobilegestalt     Also hook MGCopyAnswer/MGCopyAnswerWithError
   --disabled               Write enabled=false
 
 Examples:
@@ -39,6 +40,7 @@ SSH_PORT="${SSH_LOCAL_PORT:-2224}"
 BUNDLE_ID=""
 FROM_JSON=""
 ENABLED=1
+HOOK_MOBILEGESTALT=0
 
 typeset -A OPTS
 args=("$@")
@@ -53,6 +55,7 @@ while (( ${#args[@]} > 0 )); do
     --from-json) (( ${#args[@]} >= 2 )) || vpa_die "--from-json requires a file"; FROM_JSON="${args[2]}"; args=("${args[@]:2}") ;;
     --from-json=*) FROM_JSON="${args[1]#--from-json=}"; args=("${args[@]:1}") ;;
     --disabled) ENABLED=0; args=("${args[@]:1}") ;;
+    --hook-mobilegestalt) HOOK_MOBILEGESTALT=1; args=("${args[@]:1}") ;;
     --device-name|--idfa|--idfv|--udid|--serial|--wifi|--bluetooth|--product-type|--model|--system-version|--build-version|--locale|--languages|--timezone)
       (( ${#args[@]} >= 2 )) || vpa_die "${args[1]} requires a value"
       key="${args[1]#--}"
@@ -79,11 +82,11 @@ else
     "${OPTS[device-name]:-}" "${OPTS[idfa]:-}" "${OPTS[idfv]:-}" "${OPTS[udid]:-}" \
     "${OPTS[serial]:-}" "${OPTS[wifi]:-}" "${OPTS[bluetooth]:-}" "${OPTS[product-type]:-}" \
     "${OPTS[model]:-}" "${OPTS[system-version]:-}" "${OPTS[build-version]:-}" \
-    "${OPTS[locale]:-}" "${OPTS[languages]:-}" "${OPTS[timezone]:-}" > "$TMP_JSON" <<'PY'
+    "${OPTS[locale]:-}" "${OPTS[languages]:-}" "${OPTS[timezone]:-}" "$HOOK_MOBILEGESTALT" > "$TMP_JSON" <<'PY'
 import json, random, sys, time, uuid
 bundle, enabled = sys.argv[1], bool(int(sys.argv[2]))
 (device_name, idfa, idfv, udid, serial, wifi, bt, product_type, model,
- system_version, build_version, locale, languages, timezone) = sys.argv[3:]
+ system_version, build_version, locale, languages, timezone, hook_mg) = sys.argv[3:]
 
 def mac():
     return '02:%02x:%02x:%02x:%02x:%02x' % tuple(random.randrange(256) for _ in range(5))
@@ -117,6 +120,7 @@ profile = {
     'timeZone': timezone,
     'advertisingTrackingEnabled': True,
     'trackingAuthorized': True,
+    'hookMobileGestalt': bool(int(hook_mg)),
     'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
 }
 json.dump(profile, sys.stdout, indent=2, ensure_ascii=False)
