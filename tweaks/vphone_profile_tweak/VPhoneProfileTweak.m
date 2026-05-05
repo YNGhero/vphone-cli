@@ -9,6 +9,10 @@ static NSDictionary *VPProfile;
 static NSString *VPBundleID;
 static NSString *VPProfilePath;
 static BOOL VPEnabled;
+static BOOL VPAuditReads;
+static BOOL VPAuditMobileGestalt;
+static BOOL VPSpoofMobileGestalt;
+static NSMutableSet<NSString *> *VPLoggedReads;
 
 static void VPLog(NSString *format, ...) {
     va_list args;
@@ -41,6 +45,16 @@ static BOOL VPBool(NSString *key, BOOL defaultValue) {
     id value = VPProfile[key];
     if ([value respondsToSelector:@selector(boolValue)]) return [value boolValue];
     return defaultValue;
+}
+
+static void VPLogReadOnce(NSString *name) {
+    if (!name.length) return;
+    @synchronized ([NSProcessInfo processInfo]) {
+        if (!VPLoggedReads) VPLoggedReads = [NSMutableSet set];
+        if ([VPLoggedReads containsObject:name]) return;
+        [VPLoggedReads addObject:name];
+    }
+    VPLog(@"read %@", name);
 }
 
 static NSArray<NSString *> *VPStringArray(NSString *key) {
@@ -100,31 +114,37 @@ static id (*orig_UIDevice_systemVersion)(id, SEL);
 static id (*orig_UIDevice_identifierForVendor)(id, SEL);
 
 static id rep_UIDevice_name(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"UIDevice.name -> deviceName");
     NSString *v = VPString(@"deviceName");
     return v ?: (orig_UIDevice_name ? orig_UIDevice_name(self, _cmd) : nil);
 }
 
 static id rep_UIDevice_model(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"UIDevice.model -> model");
     NSString *v = VPString(@"model");
     return v ?: (orig_UIDevice_model ? orig_UIDevice_model(self, _cmd) : nil);
 }
 
 static id rep_UIDevice_localizedModel(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"UIDevice.localizedModel -> localizedModel");
     NSString *v = VPString(@"localizedModel") ?: VPString(@"model");
     return v ?: (orig_UIDevice_localizedModel ? orig_UIDevice_localizedModel(self, _cmd) : nil);
 }
 
 static id rep_UIDevice_systemName(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"UIDevice.systemName -> systemName");
     NSString *v = VPString(@"systemName");
     return v ?: (orig_UIDevice_systemName ? orig_UIDevice_systemName(self, _cmd) : nil);
 }
 
 static id rep_UIDevice_systemVersion(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"UIDevice.systemVersion -> systemVersion");
     NSString *v = VPString(@"systemVersion");
     return v ?: (orig_UIDevice_systemVersion ? orig_UIDevice_systemVersion(self, _cmd) : nil);
 }
 
 static id rep_UIDevice_identifierForVendor(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"UIDevice.identifierForVendor -> idfv");
     NSUUID *uuid = VPUUID(@"idfv");
     return uuid ?: (orig_UIDevice_identifierForVendor ? orig_UIDevice_identifierForVendor(self, _cmd) : nil);
 }
@@ -133,16 +153,19 @@ static id (*orig_AS_advertisingIdentifier)(id, SEL);
 static BOOL (*orig_AS_isAdvertisingTrackingEnabled)(id, SEL);
 
 static id rep_AS_advertisingIdentifier(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"ASIdentifierManager.advertisingIdentifier -> idfa");
     NSUUID *uuid = VPUUID(@"idfa");
     return uuid ?: (orig_AS_advertisingIdentifier ? orig_AS_advertisingIdentifier(self, _cmd) : nil);
 }
 
 static BOOL rep_AS_isAdvertisingTrackingEnabled(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"ASIdentifierManager.isAdvertisingTrackingEnabled -> advertisingTrackingEnabled");
     return VPBool(@"advertisingTrackingEnabled", YES);
 }
 
 static NSInteger (*orig_ATT_trackingAuthorizationStatus)(id, SEL);
 static NSInteger rep_ATT_trackingAuthorizationStatus(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"ATTrackingManager.trackingAuthorizationStatus -> trackingAuthorized");
     id value = VPProfile[@"trackingAuthorizationStatus"];
     if ([value respondsToSelector:@selector(integerValue)]) return [value integerValue];
     if (VPBool(@"trackingAuthorized", YES)) return 3; // ATTrackingManagerAuthorizationStatusAuthorized
@@ -160,14 +183,17 @@ static NSLocale *VPLocale(void) {
 }
 
 static id rep_NSLocale_currentLocale(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"NSLocale.currentLocale -> localeIdentifier");
     return VPLocale() ?: (orig_NSLocale_currentLocale ? orig_NSLocale_currentLocale(self, _cmd) : nil);
 }
 
 static id rep_NSLocale_autoupdatingCurrentLocale(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"NSLocale.autoupdatingCurrentLocale -> localeIdentifier");
     return VPLocale() ?: (orig_NSLocale_autoupdatingCurrentLocale ? orig_NSLocale_autoupdatingCurrentLocale(self, _cmd) : nil);
 }
 
 static id rep_NSLocale_preferredLanguages(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"NSLocale.preferredLanguages -> preferredLanguages");
     NSArray *langs = VPStringArray(@"preferredLanguages");
     return langs ?: (orig_NSLocale_preferredLanguages ? orig_NSLocale_preferredLanguages(self, _cmd) : nil);
 }
@@ -183,14 +209,17 @@ static NSTimeZone *VPTimeZone(void) {
 }
 
 static id rep_NSTimeZone_localTimeZone(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"NSTimeZone.localTimeZone -> timeZone");
     return VPTimeZone() ?: (orig_NSTimeZone_localTimeZone ? orig_NSTimeZone_localTimeZone(self, _cmd) : nil);
 }
 
 static id rep_NSTimeZone_systemTimeZone(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"NSTimeZone.systemTimeZone -> timeZone");
     return VPTimeZone() ?: (orig_NSTimeZone_systemTimeZone ? orig_NSTimeZone_systemTimeZone(self, _cmd) : nil);
 }
 
 static id rep_NSTimeZone_defaultTimeZone(id self, SEL _cmd) {
+    if (VPAuditReads) VPLogReadOnce(@"NSTimeZone.defaultTimeZone -> timeZone");
     return VPTimeZone() ?: (orig_NSTimeZone_defaultTimeZone ? orig_NSTimeZone_defaultTimeZone(self, _cmd) : nil);
 }
 
@@ -199,10 +228,12 @@ static id rep_NSUserDefaults_objectForKey(id self, SEL _cmd, id key) {
     if ([key isKindOfClass:NSString.class]) {
         NSString *k = (NSString *)key;
         if ([k isEqualToString:@"AppleLanguages"]) {
+            if (VPAuditReads) VPLogReadOnce(@"NSUserDefaults.AppleLanguages -> preferredLanguages");
             NSArray *langs = VPStringArray(@"preferredLanguages");
             if (langs) return langs;
         }
         if ([k isEqualToString:@"AppleLocale"]) {
+            if (VPAuditReads) VPLogReadOnce(@"NSUserDefaults.AppleLocale -> localeIdentifier");
             NSString *locale = VPString(@"localeIdentifier") ?: VPString(@"locale");
             if (locale.length) return locale;
         }
@@ -256,8 +287,14 @@ static CFTypeRef VPCopyGestaltValue(CFStringRef cfKey) {
 }
 
 static CFTypeRef rep_MGCopyAnswer(CFStringRef key) {
-    CFTypeRef value = VPCopyGestaltValue(key);
-    if (value) return value;
+    NSString *keyString = key ? (__bridge NSString *)key : @"<null>";
+    if (VPAuditMobileGestalt) {
+        VPLogReadOnce([NSString stringWithFormat:@"MGCopyAnswer:%@", keyString]);
+    }
+    if (VPSpoofMobileGestalt) {
+        CFTypeRef value = VPCopyGestaltValue(key);
+        if (value) return value;
+    }
     return orig_MGCopyAnswer ? orig_MGCopyAnswer(key) : NULL;
 }
 
@@ -330,10 +367,13 @@ __attribute__((constructor))
 static void VPhoneProfileTweakInit(void) {
     @autoreleasepool {
         if (!VPLoadProfile()) return;
+        VPAuditReads = VPBool(@"auditReads", NO);
+        VPAuditMobileGestalt = VPBool(@"auditMobileGestalt", NO);
+        VPSpoofMobileGestalt = VPBool(@"hookMobileGestalt", NO);
         VPHookObjectiveC();
-        if (VPBool(@"hookMobileGestalt", NO)) {
+        if (VPSpoofMobileGestalt || VPAuditMobileGestalt) {
             VPHookMobileGestalt();
         }
-        VPLog(@"enabled bundle=%@ profile=%@", VPBundleID, VPProfilePath);
+        VPLog(@"enabled bundle=%@ profile=%@ auditReads=%d auditMobileGestalt=%d hookMobileGestalt=%d", VPBundleID, VPProfilePath, VPAuditReads, VPAuditMobileGestalt, VPSpoofMobileGestalt);
     }
 }

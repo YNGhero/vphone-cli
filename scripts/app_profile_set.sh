@@ -27,12 +27,15 @@ Options:
   --locale <id>            NSLocale currentLocale, e.g. zh_CN/en_US
   --languages <csv>        NSLocale preferredLanguages, e.g. zh-Hans,en
   --timezone <name>        NSTimeZone, e.g. Asia/Shanghai
-  --hook-mobilegestalt     Also hook MGCopyAnswer/MGCopyAnswerWithError
+  --audit-reads            Log hooked Objective-C API reads to /tmp/vphone_profile_tweak.log
+  --audit-mobilegestalt    Experimental: log MGCopyAnswer keys without spoofing values
+  --hook-mobilegestalt     Spoof MGCopyAnswer values; higher compatibility risk
   --disabled               Write enabled=false
 
 Examples:
   zsh scripts/app_profile_set.sh 2224 com.burbn.instagram
   zsh scripts/app_profile_set.sh 2224 com.burbn.instagram --device-name 'iPhone' --locale en_US --languages en --timezone America/Los_Angeles
+  zsh scripts/app_profile_set.sh 2224 com.burbn.instagram --audit-reads
 USAGE
 }
 
@@ -41,6 +44,8 @@ BUNDLE_ID=""
 FROM_JSON=""
 ENABLED=1
 HOOK_MOBILEGESTALT=0
+AUDIT_READS=0
+AUDIT_MOBILEGESTALT=0
 
 typeset -A OPTS
 args=("$@")
@@ -56,6 +61,8 @@ while (( ${#args[@]} > 0 )); do
     --from-json=*) FROM_JSON="${args[1]#--from-json=}"; args=("${args[@]:1}") ;;
     --disabled) ENABLED=0; args=("${args[@]:1}") ;;
     --hook-mobilegestalt) HOOK_MOBILEGESTALT=1; args=("${args[@]:1}") ;;
+    --audit-reads) AUDIT_READS=1; args=("${args[@]:1}") ;;
+    --audit-mobilegestalt) AUDIT_MOBILEGESTALT=1; args=("${args[@]:1}") ;;
     --device-name|--idfa|--idfv|--udid|--serial|--wifi|--bluetooth|--product-type|--model|--system-version|--build-version|--locale|--languages|--timezone)
       (( ${#args[@]} >= 2 )) || vpa_die "${args[1]} requires a value"
       key="${args[1]#--}"
@@ -82,11 +89,13 @@ else
     "${OPTS[device-name]:-}" "${OPTS[idfa]:-}" "${OPTS[idfv]:-}" "${OPTS[udid]:-}" \
     "${OPTS[serial]:-}" "${OPTS[wifi]:-}" "${OPTS[bluetooth]:-}" "${OPTS[product-type]:-}" \
     "${OPTS[model]:-}" "${OPTS[system-version]:-}" "${OPTS[build-version]:-}" \
-    "${OPTS[locale]:-}" "${OPTS[languages]:-}" "${OPTS[timezone]:-}" "$HOOK_MOBILEGESTALT" > "$TMP_JSON" <<'PY'
+    "${OPTS[locale]:-}" "${OPTS[languages]:-}" "${OPTS[timezone]:-}" "$HOOK_MOBILEGESTALT" \
+    "$AUDIT_READS" "$AUDIT_MOBILEGESTALT" > "$TMP_JSON" <<'PY'
 import json, random, sys, time, uuid
 bundle, enabled = sys.argv[1], bool(int(sys.argv[2]))
 (device_name, idfa, idfv, udid, serial, wifi, bt, product_type, model,
- system_version, build_version, locale, languages, timezone, hook_mg) = sys.argv[3:]
+ system_version, build_version, locale, languages, timezone, hook_mg,
+ audit_reads, audit_mg) = sys.argv[3:]
 
 def mac():
     return '02:%02x:%02x:%02x:%02x:%02x' % tuple(random.randrange(256) for _ in range(5))
@@ -121,6 +130,8 @@ profile = {
     'advertisingTrackingEnabled': True,
     'trackingAuthorized': True,
     'hookMobileGestalt': bool(int(hook_mg)),
+    'auditReads': bool(int(audit_reads)),
+    'auditMobileGestalt': bool(int(audit_mg)),
     'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
 }
 json.dump(profile, sys.stdout, indent=2, ensure_ascii=False)

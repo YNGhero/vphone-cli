@@ -58,6 +58,40 @@ zsh scripts/app_profile_set.sh 2224 com.burbn.instagram --hook-mobilegestalt
 
 `--hook-mobilegestalt` 会 hook `MGCopyAnswer`。默认不开启是为了兼容性；确认目标 App 稳定后再打开。
 
+如果只是想确认目标 App 启动时读取了哪些设备参数，先用安全审计模式：
+
+```bash
+zsh scripts/app_profile_set.sh 2224 com.burbn.instagram \
+  --audit-reads
+```
+
+然后重开 App，查看：
+
+```bash
+sshpass -p alpine ssh -p 2224 root@127.0.0.1 \
+  'export PATH=/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin:/sbin:/usr/sbin:$PATH; cat /tmp/vphone_profile_tweak.log'
+```
+
+审计模式说明：
+
+- `auditReads=true`：记录 Objective-C 层读取，例如 `UIDevice.identifierForVendor`、`ASIdentifierManager.advertisingIdentifier`、语言、时区等。
+- `auditMobileGestalt=true`：只记录 `MGCopyAnswer:<key>`，默认不改返回值；这是实验模式，Instagram 上可能触发启动 watchdog，先不要默认开启。
+- `auditMobileGestalt=true` 且 `hookMobileGestalt=false` 时，MobileGestalt 只是 log-only，用来判断是否读取 UDID/序列号/MAC 等底层字段。
+- `hookMobileGestalt=true` 时，才会真正返回 profile 里的 UDID/序列号/MAC 等值。
+
+如果要低风险判断目标包里是否显式引用 MobileGestalt/UDID 字符串，可以先做静态扫描：
+
+```bash
+sshpass -p alpine ssh -p 2224 root@127.0.0.1 '
+export PATH=/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin:/sbin:/usr/sbin:$PATH
+app=$(find /var/containers/Bundle/Application /private/var/containers/Bundle/Application -maxdepth 3 -path "*.app/Info.plist" -type f 2>/dev/null | while read p; do grep -a -q "com.burbn.instagram" "$p" && dirname "$p" && break; done)
+for pat in MGCopyAnswer MobileGestalt UniqueDeviceID UniqueDeviceIDString OpaqueDeviceID SerialNumber WifiAddress WiFiAddress BluetoothAddress; do
+  c=$(grep -aRIl -- "$pat" "$app" 2>/dev/null | wc -l | tr -d " ")
+  echo "$pat $c"
+done
+'
+```
+
 也可以上传自己准备好的 JSON：
 
 ```bash
@@ -148,7 +182,10 @@ RegionInfo
   "preferredLanguages": ["en"],
   "timeZone": "America/Los_Angeles",
   "advertisingTrackingEnabled": true,
-  "trackingAuthorized": true
+  "trackingAuthorized": true,
+  "hookMobileGestalt": false,
+  "auditReads": false,
+  "auditMobileGestalt": false
 }
 ```
 

@@ -458,6 +458,8 @@ generate_profile() {
   "advertisingTrackingEnabled": true,
   "trackingAuthorized": true,
   "hookMobileGestalt": false,
+  "auditReads": false,
+  "auditMobileGestalt": false,
   "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 JSON
