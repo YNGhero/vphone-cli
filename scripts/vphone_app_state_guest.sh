@@ -426,14 +426,29 @@ generate_profile() {
   serial="VP$(date +%s)$(printf '%04d' $((RANDOM % 10000)))"
   wifi="$(printf '02:%02x:%02x:%02x:%02x:%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))"
   bt="$(printf '02:%02x:%02x:%02x:%02x:%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))"
+  case $((RANDOM % 13)) in
+    0) locale_identifier="en_US"; time_zone="America/New_York" ;;
+    1) locale_identifier="en_US"; time_zone="America/Chicago" ;;
+    2) locale_identifier="en_US"; time_zone="America/Denver" ;;
+    3) locale_identifier="en_US"; time_zone="America/Los_Angeles" ;;
+    4) locale_identifier="en_US"; time_zone="America/Phoenix" ;;
+    5) locale_identifier="en_US"; time_zone="Pacific/Honolulu" ;;
+    6) locale_identifier="en_CA"; time_zone="America/Toronto" ;;
+    7) locale_identifier="en_CA"; time_zone="America/Vancouver" ;;
+    8) locale_identifier="en_GB"; time_zone="Europe/London" ;;
+    9) locale_identifier="en_IE"; time_zone="Europe/Dublin" ;;
+    10) locale_identifier="en_AU"; time_zone="Australia/Sydney" ;;
+    11) locale_identifier="en_AU"; time_zone="Australia/Melbourne" ;;
+    *) locale_identifier="en_NZ"; time_zone="Pacific/Auckland" ;;
+  esac
   name="iPhone"
   product_type="${VPHONE_PROFILE_PRODUCT_TYPE:-iPhone17,3}"
   model="${VPHONE_PROFILE_MODEL:-iPhone}"
   system_name="${VPHONE_PROFILE_SYSTEM_NAME:-iOS}"
   system_version="${VPHONE_PROFILE_SYSTEM_VERSION:-}"
   build_version="${VPHONE_PROFILE_BUILD_VERSION:-}"
-  locale_identifier="${VPHONE_PROFILE_LOCALE:-}"
-  time_zone="${VPHONE_PROFILE_TIMEZONE:-}"
+  locale_identifier="${VPHONE_PROFILE_LOCALE:-$locale_identifier}"
+  time_zone="${VPHONE_PROFILE_TIMEZONE:-$time_zone}"
   cat > "$out" <<JSON
 {
   "enabled": true,
@@ -453,7 +468,7 @@ generate_profile() {
   "systemVersion": "$system_version",
   "buildVersion": "$build_version",
   "localeIdentifier": "$locale_identifier",
-  "preferredLanguages": [],
+  "preferredLanguages": ["en"],
   "timeZone": "$time_zone",
   "advertisingTrackingEnabled": true,
   "trackingAuthorized": true,

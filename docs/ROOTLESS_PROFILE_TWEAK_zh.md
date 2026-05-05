@@ -39,6 +39,26 @@ zsh scripts/install_profile_tweak_to_instance.sh 2224 com.burbn.instagram
 zsh scripts/app_profile_set.sh 2224 com.burbn.instagram
 ```
 
+默认会动态生成：
+
+- `idfa`
+- `idfv`
+- `udid` / `oudid`
+- `serial`
+- `wifiAddress`
+- `bluetoothAddress`
+- 英文地区 `localeIdentifier`，例如 `en_US` / `en_GB` / `en_CA` / `en_AU`
+- 与地区匹配的 `timeZone`
+
+默认固定为：
+
+- `preferredLanguages`: `["en"]`
+- `systemName`: `iOS`
+- `model` / `localizedModel`: `iPhone`
+- `hookMobileGestalt`: `false`
+
+说明：`UIDevice.systemName` 和 `UIDevice.model` 在真实 iPhone 上本来就是稳定值，默认不乱随机；`systemVersion` / `buildVersion` 默认留空并回退到系统真实值，避免和真实运行环境不一致。
+
 指定部分字段：
 
 ```bash
@@ -106,7 +126,7 @@ zsh scripts/app_profile_set.sh 2224 com.burbn.instagram --from-json ./profile.js
 zsh scripts/app_new_device.sh 2224 com.burbn.instagram --backup-before --yes
 ```
 
-新版生成的 `idfa` / `idfv` / `udid` 都是标准 UUID 格式。
+新版生成的 `idfa` / `idfv` / `udid` 都是标准 UUID 格式，并且默认语言列表为 `["en"]`，地区/时区会在英语地区中随机选择。
 
 ## 4. 当前已 hook 的接口
 

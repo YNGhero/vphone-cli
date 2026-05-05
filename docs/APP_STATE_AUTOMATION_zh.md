@@ -87,6 +87,8 @@ zsh scripts/app_new_device.sh 2224 com.example.app --yes
 /var/mobile/vphone_app_profiles/<bundle-id>.json
 ```
 
+   默认会随机生成 `idfa`、`idfv`、`udid/oudid`、序列号、Wi-Fi/蓝牙 MAC、英文地区和匹配时区；`preferredLanguages` 固定为 `["en"]`。`systemName`、`model` 保持 iPhone 合理默认值，`systemVersion/buildVersion` 默认回退到系统真实值。
+
 7. 清理 pasteboard，除非指定 `--no-pasteboard`。
 8. 重启 `cfprefsd` / `securityd`。
 9. 尝试重新打开目标 App。

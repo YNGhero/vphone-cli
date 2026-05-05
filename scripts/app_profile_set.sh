@@ -24,9 +24,9 @@ Options:
   --model <value>          UIDevice model/localizedModel, default iPhone
   --system-version <ver>   UIDevice.systemVersion / MG ProductVersion
   --build-version <ver>    MG BuildVersion
-  --locale <id>            NSLocale currentLocale, e.g. zh_CN/en_US
-  --languages <csv>        NSLocale preferredLanguages, e.g. zh-Hans,en
-  --timezone <name>        NSTimeZone, e.g. Asia/Shanghai
+  --locale <id>            NSLocale currentLocale; default random English locale
+  --languages <csv>        NSLocale preferredLanguages; default en
+  --timezone <name>        NSTimeZone; default timezone matching random English locale
   --audit-reads            Log hooked Objective-C API reads to /tmp/vphone_profile_tweak.log
   --audit-mobilegestalt    Experimental: log MGCopyAnswer keys without spoofing values
   --hook-mobilegestalt     Spoof MGCopyAnswer values; higher compatibility risk
@@ -105,7 +105,25 @@ def uuid_s(v=''):
         return str(uuid.UUID(v)).upper()
     return str(uuid.uuid4()).upper()
 
-langs = [x.strip() for x in languages.split(',') if x.strip()] if languages else []
+english_regions = [
+    ('en_US', 'America/New_York'),
+    ('en_US', 'America/Chicago'),
+    ('en_US', 'America/Denver'),
+    ('en_US', 'America/Los_Angeles'),
+    ('en_US', 'America/Phoenix'),
+    ('en_US', 'Pacific/Honolulu'),
+    ('en_CA', 'America/Toronto'),
+    ('en_CA', 'America/Vancouver'),
+    ('en_GB', 'Europe/London'),
+    ('en_IE', 'Europe/Dublin'),
+    ('en_AU', 'Australia/Sydney'),
+    ('en_AU', 'Australia/Melbourne'),
+    ('en_NZ', 'Pacific/Auckland'),
+]
+default_locale, default_timezone = random.choice(english_regions)
+langs = [x.strip() for x in languages.split(',') if x.strip()] if languages else ['en']
+locale = locale or default_locale
+timezone = timezone or default_timezone
 udid_value = udid or uuid_s()
 profile = {
     'enabled': enabled,
