@@ -334,3 +334,4 @@ setup_logs/
 /vm.instances
 
 /vphone_instance.conf
+/app_backups
