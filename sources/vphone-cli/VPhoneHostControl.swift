@@ -9,7 +9,7 @@ import ImageIO
 /// line out, then the connection closes.
 ///
 /// Every response includes an `"image"` field with a compact base64-encoded
-/// grayscale JPEG of the current screen (unless `"screen":false` is sent).
+/// JPEG of the current screen (unless `"screen":false` is sent).
 ///
 /// Supported commands:
 ///   {"t":"screenshot"}                          → full-res save to Desktop (or explicit path)
@@ -135,7 +135,7 @@ class VPhoneHostControl {
 
     // MARK: - Compact Screenshot
 
-    /// Capture current screen as a small grayscale JPEG, returned as base64.
+    /// Capture current screen as a small color JPEG, returned as base64.
     private func captureCompactScreenshot() async -> String? {
         guard let recorder = screenRecorder, let view = captureView else {
             return nil
@@ -149,28 +149,28 @@ class VPhoneHostControl {
         let dstW = cgImage.width / Self.compactScale
         let dstH = cgImage.height / Self.compactScale
 
-        // Draw into grayscale context
-        let gray = CGColorSpaceCreateDeviceGray()
+        // Draw into a downscaled RGB context for readable color previews.
+        let rgb = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(
             data: nil, width: dstW, height: dstH,
-            bitsPerComponent: 8, bytesPerRow: dstW,
-            space: gray, bitmapInfo: CGImageAlphaInfo.none.rawValue
+            bitsPerComponent: 8, bytesPerRow: dstW * 4,
+            space: rgb,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
         ) else { return nil }
 
-        // High contrast: bump brightness
         ctx.setShouldAntialias(true)
         ctx.interpolationQuality = .high
         ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: dstW, height: dstH))
 
-        guard let grayImage = ctx.makeImage() else { return nil }
+        guard let previewImage = ctx.makeImage() else { return nil }
 
-        // Encode as low-quality JPEG
+        // Encode as compact JPEG; color is still small at card-preview size.
         let data = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else {
             return nil
         }
-        let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.35]
-        CGImageDestinationAddImage(dest, grayImage, options as CFDictionary)
+        let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.45]
+        CGImageDestinationAddImage(dest, previewImage, options as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { return nil }
 
         return (data as Data).base64EncodedString()
