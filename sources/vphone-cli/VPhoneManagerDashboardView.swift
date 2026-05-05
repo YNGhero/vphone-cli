@@ -721,7 +721,7 @@ struct VPhoneInstanceLivePreviewView: View {
                 lastError = record.socketExists ? "暂时无法获取画面" : "打开 GUI 后显示实时画面"
             }
 
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }
 }
