@@ -7,6 +7,8 @@ VM_DIR      ?= vm
 CPU         ?= 8          # CPU cores (only used during vm_new)
 MEMORY      ?= 8192       # Memory in MB (only used during vm_new)
 DISK_SIZE   ?= 64         # Disk size in GB (only used during vm_new)
+NETWORK_MODE ?= nat       # nat, bridged, or none (stored in manifest)
+NETWORK_INTERFACE ?=      # BSD interface for bridged mode, e.g. en0
 BACKUPS_DIR ?= vm.backups
 NAME        ?=
 BACKUP_INCLUDE_IPSW ?= 0
@@ -31,6 +33,7 @@ VENV        := .venv
 TOOLS_PREFIX := .tools
 PMD3_BRIDGE := $(CURDIR)/$(SCRIPTS)/pymobiledevice3_bridge.py
 PYTHON      := $(CURDIR)/$(VENV)/bin/python3
+ABS_VM_DIR  := $(abspath $(VM_DIR))
 
 SWIFT_SOURCES := $(shell find sources -name '*.swift')
 
@@ -48,8 +51,10 @@ help:
 	@echo "             DEV=1                     Dev firmware/CFW path (dev TXM + cfw_install_dev)"
 	@echo "             LESS=1                    Build, keeping iOS security mitigations enabled."
 	@echo "             SKIP_PROJECT_SETUP=1      Skip setup_tools/build"
-	@echo "             NONE_INTERACTIVE=1        Auto-continue prompts + boot analysis"
+	@echo "             NONE_INTERACTIVE=1        Auto-continue prompts"
+	@echo "             SKIP_BOOT_ANALYSIS=1      Skip optional final boot-analysis pass"
 	@echo "             SUDO_PASSWORD=...         Preload sudo credential for setup flow"
+	@echo "             VPHONE_SUDO_PASSWORD=...  Same as above; used by one-click scripts"
 	@echo "             NO_BINPACK=1              Excludes the SSH, VNC, ... binaries from being installed (patchless-only, currently)"
 	@echo "             NO_VPHONED=1              Excludes vphoned from being installed (patchless-only, currently)"
 	@echo ""
@@ -58,6 +63,7 @@ help:
 	@echo ""
 	@echo "Build:"
 	@echo "  make build                   Build + sign vphone-cli"
+	@echo "  make manager                 Open standalone local multi-instance manager"
 	@echo "  make vphoned                 Cross-compile + sign vphoned for iOS"
 	@echo "  make clean                   Remove all build artifacts (keeps IPSWs)"
 	@echo ""
@@ -67,6 +73,8 @@ help:
 	@echo "             CPU=8             CPU cores (stored in manifest)"
 	@echo "             MEMORY=8192       Memory in MB (stored in manifest)"
 	@echo "             DISK_SIZE=64      Disk size in GB (stored in manifest)"
+	@echo "             NETWORK_MODE=nat  Network mode: nat, bridged, none"
+	@echo "             NETWORK_INTERFACE=en0 Bridged interface"
 	@echo "  make vm_backup NAME=<name>   Save current VM as a named backup"
 	@echo "  make vm_restore NAME=<name>  Restore a named backup into vm/"
 	@echo "  make vm_switch NAME=<name>   Save current + restore target (one step)"
@@ -78,6 +86,7 @@ help:
 	@echo "  make boot                    Boot VM (reads from config.plist)"
 	@echo "  make boot_less               Boot VM in vphoned patchless compatibility"
 	@echo "    Options: NO_VPHONED=1              Excludes vphoned from being installed"
+	@echo "             INSTALL_IPA=/path/app.ipa Auto-install IPA/TIPA after guest connects"
 	@echo "  make boot_dfu                Boot VM in DFU mode (reads from config.plist)"
 	@echo ""
 	@echo "Firmware pipeline:"
@@ -109,7 +118,7 @@ help:
 	@echo "  make cfw_install_dev         Install CFW mods via SSH (dev mode)"
 	@echo "  make cfw_install_jb          Install CFW + JB extensions (jetsam/procursus/basebin)"
 	@echo ""
-	@echo "Variables: VM_DIR=$(VM_DIR) CPU=$(CPU) MEMORY=$(MEMORY) DISK_SIZE=$(DISK_SIZE)"
+	@echo "Variables: VM_DIR=$(VM_DIR) CPU=$(CPU) MEMORY=$(MEMORY) DISK_SIZE=$(DISK_SIZE) NETWORK_MODE=$(NETWORK_MODE) NETWORK_INTERFACE=$(NETWORK_INTERFACE)"
 
 # ═══════════════════════════════════════════════════════════════════
 # Setup
@@ -126,10 +135,17 @@ setup_machine:
 		echo "Error: JB=1, DEV=1, and LESS=1 are mutually exclusive"; \
 		exit 1; \
 	fi
-	SUDO_PASSWORD="$(SUDO_PASSWORD)" \
+	@SUDO_PASSWORD="$(SUDO_PASSWORD)" \
+	VPHONE_SUDO_PASSWORD="$(VPHONE_SUDO_PASSWORD)" \
 	NONE_INTERACTIVE="$(NONE_INTERACTIVE)" \
+	SKIP_BOOT_ANALYSIS="$(SKIP_BOOT_ANALYSIS)" \
 	NO_BINPACK="$(NO_BINPACK)" \
 	NO_VPHONED="$(NO_VPHONED)" \
+	CPU="$(CPU)" \
+	MEMORY="$(MEMORY)" \
+	DISK_SIZE="$(DISK_SIZE)" \
+	NETWORK_MODE="$(NETWORK_MODE)" \
+	NETWORK_INTERFACE="$(NETWORK_INTERFACE)" \
 	zsh $(SCRIPTS)/setup_machine.sh \
 		$(if $(filter 1 true yes YES TRUE,$(JB)),--jb,) \
 		$(if $(filter 1 true yes YES TRUE,$(DEV)),--dev,) \
@@ -152,11 +168,14 @@ clean:
 # Build
 # ═══════════════════════════════════════════════════════════════════
 
-.PHONY: build patcher_build bundle
+.PHONY: build patcher_build bundle manager
 
 build: $(BINARY)
 
 patcher_build: $(PATCHER_BINARY)
+
+manager: build
+	$(BINARY) manager --project-root "$(CURDIR)"
 
 $(PATCHER_BINARY): $(SWIFT_SOURCES) Package.swift
 	@echo "=== Building vphone-cli patcher ($(GIT_HASH)) ==="
@@ -206,7 +225,7 @@ vphoned:
 .PHONY: vm_new vm_backup vm_restore vm_switch vm_list amfidont_allow_vphone boot_host_preflight boot boot_less boot_dfu boot_binary_check
 
 vm_new:
-	CPU="$(CPU)" MEMORY="$(MEMORY)" \
+	CPU="$(CPU)" MEMORY="$(MEMORY)" NETWORK_MODE="$(NETWORK_MODE)" NETWORK_INTERFACE="$(NETWORK_INTERFACE)" \
 	zsh $(SCRIPTS)/vm_create.sh --dir $(VM_DIR) --disk-size $(DISK_SIZE)
 
 vm_backup:
@@ -277,7 +296,8 @@ boot_binary_check: $(BINARY)
 
 boot: bundle vphoned boot_binary_check
 	cd $(VM_DIR) && "$(CURDIR)/$(BUNDLE_BIN)" \
-		--config ./config.plist
+		--config ./config.plist \
+		$(if $(INSTALL_IPA),--install-ipa "$(INSTALL_IPA)",)
 
 boot_less: bundle vphoned boot_binary_check_less
 	cd $(VM_DIR) && "$(CURDIR)/$(BUNDLE_BIN)" \
@@ -300,12 +320,12 @@ fw_prepare:
 	cd $(VM_DIR) && bash "$(CURDIR)/$(SCRIPTS)/fw_prepare.sh"
 
 fw_patch: patcher_build
-	"$(CURDIR)/$(PATCHER_BINARY)" patch-firmware --vm-directory "$(CURDIR)/$(VM_DIR)" --variant regular
+	"$(CURDIR)/$(PATCHER_BINARY)" patch-firmware --vm-directory "$(ABS_VM_DIR)" --variant regular
 
 UID := $(shell id -u)
 ifeq ($(UID),0)
 fw_patch_less: patcher_build
-	"$(CURDIR)/$(PATCHER_BINARY)" patch-firmware --vm-directory "$(CURDIR)/$(VM_DIR)" \
+	"$(CURDIR)/$(PATCHER_BINARY)" patch-firmware --vm-directory "$(ABS_VM_DIR)" \
 	--variant less \
 	$(if $(filter 1 true yes YES TRUE,$(NO_BINPACK)),--no-binpack,)
 	$(if $(filter 1 true yes YES TRUE,$(NO_VPHONED)),--no-vphoned,)
@@ -316,10 +336,10 @@ fw_patch_less:
 endif
 
 fw_patch_dev: patcher_build
-	"$(CURDIR)/$(PATCHER_BINARY)" patch-firmware --vm-directory "$(CURDIR)/$(VM_DIR)" --variant dev
+	"$(CURDIR)/$(PATCHER_BINARY)" patch-firmware --vm-directory "$(ABS_VM_DIR)" --variant dev
 
 fw_patch_jb: patcher_build
-	"$(CURDIR)/$(PATCHER_BINARY)" patch-firmware --vm-directory "$(CURDIR)/$(VM_DIR)" --variant jb
+	"$(CURDIR)/$(PATCHER_BINARY)" patch-firmware --vm-directory "$(ABS_VM_DIR)" --variant jb
 
 # ═══════════════════════════════════════════════════════════════════
 # Restore
@@ -331,8 +351,8 @@ fw_patch_jb: patcher_build
 define _resolve_ecid
 	if [ -n "$(RESTORE_ECID)" ]; then \
 		ECID="$(RESTORE_ECID)"; \
-	elif [ -f "$(CURDIR)/$(VM_DIR)/udid-prediction.txt" ]; then \
-		ECID=$$(grep '^ECID=' "$(CURDIR)/$(VM_DIR)/udid-prediction.txt" | head -1 | cut -d= -f2); \
+	elif [ -f "$(ABS_VM_DIR)/udid-prediction.txt" ]; then \
+		ECID=$$(grep '^ECID=' "$(ABS_VM_DIR)/udid-prediction.txt" | head -1 | cut -d= -f2); \
 	fi; \
 	if [ -z "$$ECID" ]; then \
 		echo "[-] Cannot resolve ECID — set RESTORE_ECID or run 'make boot_dfu' first"; \
@@ -356,12 +376,12 @@ restore:
 
 restore_offline:
 	@$(call _resolve_ecid); \
-	SHSH=$$(ls "$(CURDIR)/$(VM_DIR)/"*.shsh 2>/dev/null | head -1); \
+	SHSH=$$(ls "$(ABS_VM_DIR)/"*.shsh 2>/dev/null | head -1); \
 	if [ -z "$$SHSH" ]; then \
 		echo "[-] No .shsh file in $(VM_DIR)/ — run 'make restore_get_shsh' first"; \
 		exit 1; \
 	fi; \
-	RESTORE_SRC=$$(echo "$(CURDIR)/$(VM_DIR)/iPhone"*_Restore); \
+	RESTORE_SRC=$$(echo "$(ABS_VM_DIR)/iPhone"*_Restore); \
 	if [ ! -d "$$RESTORE_SRC" ]; then \
 		echo "[-] No iPhone*_Restore directory in $(VM_DIR)/"; \
 		exit 1; \
@@ -398,7 +418,7 @@ restore_offline:
 .PHONY: ramdisk_build ramdisk_send
 
 ramdisk_build: patcher_build
-	cd $(VM_DIR) && RAMDISK_UDID="$(RAMDISK_UDID)" $(PYTHON) "$(CURDIR)/$(SCRIPTS)/ramdisk_build.py" .
+	@cd $(VM_DIR) && RAMDISK_UDID="$(RAMDISK_UDID)" SUDO_PASSWORD="$(SUDO_PASSWORD)" VPHONE_SUDO_PASSWORD="$(VPHONE_SUDO_PASSWORD)" $(PYTHON) "$(CURDIR)/$(SCRIPTS)/ramdisk_build.py" .
 
 ramdisk_send:
 	cd $(VM_DIR) && PMD3_BRIDGE="$(PMD3_BRIDGE)" PYTHON="$(PYTHON)" IRECOVERY_ECID="$(IRECOVERY_ECID)" RAMDISK_UDID="$(RAMDISK_UDID)" RESTORE_UDID="$(RESTORE_UDID)" \

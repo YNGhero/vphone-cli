@@ -8,16 +8,29 @@ class VPhoneMenuController {
     let keyHelper: VPhoneKeyHelper
     let control: VPhoneControl
     weak var vm: VPhoneVirtualMachine?
+    var vmDirectoryURL: URL?
+    var projectRootURL: URL?
 
     var onFilesPressed: (() -> Void)?
     var onKeychainPressed: (() -> Void)?
     var onAppsPressed: (() -> Void)?
+    var onInstanceManagerPressed: (() -> Void)?
     var connectFileBrowserItem: NSMenuItem?
     var connectKeychainBrowserItem: NSMenuItem?
     var connectDevModeStatusItem: NSMenuItem?
     var connectPingItem: NSMenuItem?
     var connectGuestVersionItem: NSMenuItem?
     var installPackageItem: NSMenuItem?
+    var instanceManagerItem: NSMenuItem?
+    var instanceInstallPackageItem: NSMenuItem?
+    var instanceImportPhotoItem: NSMenuItem?
+    var instanceDeletePhotosItem: NSMenuItem?
+    var instanceRebootItem: NSMenuItem?
+    var instanceRespringItem: NSMenuItem?
+    var instanceConnectionInfoItem: NSMenuItem?
+    var instanceCopyIdentityItem: NSMenuItem?
+    var instanceOpenDirectoryItem: NSMenuItem?
+    var instanceOpenLogsItem: NSMenuItem?
     var clipboardGetItem: NSMenuItem?
     var clipboardSetItem: NSMenuItem?
     var appsListItem: NSMenuItem?
@@ -69,7 +82,8 @@ class VPhoneMenuController {
         appMenu.addItem(buildItem)
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(
-            withTitle: "Quit vphone", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"
+            withTitle: VPhoneMenuText.App.quit, action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
         )
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
@@ -78,15 +92,18 @@ class VPhoneMenuController {
         mainMenu.addItem(buildKeysMenu())
         mainMenu.addItem(buildAppsMenu())
         mainMenu.addItem(buildRecordMenu())
+        mainMenu.addItem(buildInstanceMenu())
 
         // Window menu — provides Cmd+W (close) and Cmd+M (minimize) for any key window
         let windowMenuItem = NSMenuItem()
-        let windowMenu = NSMenu(title: "Window")
+        let windowMenu = NSMenu(title: VPhoneMenuText.Window.menu)
         windowMenu.addItem(
-            withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"
+            withTitle: VPhoneMenuText.Window.close, action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w"
         )
         windowMenu.addItem(
-            withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"
+            withTitle: VPhoneMenuText.Window.minimize,
+            action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"
         )
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)

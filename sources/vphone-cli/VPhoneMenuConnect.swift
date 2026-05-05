@@ -5,58 +5,64 @@ import AppKit
 extension VPhoneMenuController {
     func buildConnectMenu() -> NSMenuItem {
         let item = NSMenuItem()
-        let menu = NSMenu(title: "Connect")
+        let menu = NSMenu(title: VPhoneMenuText.Connect.menu)
         menu.autoenablesItems = false
 
-        let fileBrowser = makeItem("File Browser", action: #selector(openFiles))
+        let fileBrowser = makeItem(VPhoneMenuText.Connect.fileBrowser, action: #selector(openFiles))
         fileBrowser.isEnabled = false
         connectFileBrowserItem = fileBrowser
         menu.addItem(fileBrowser)
 
-        let keychainBrowser = makeItem("Keychain Browser", action: #selector(openKeychain))
+        let keychainBrowser = makeItem(
+            VPhoneMenuText.Connect.keychainBrowser, action: #selector(openKeychain)
+        )
         keychainBrowser.isEnabled = false
         connectKeychainBrowserItem = keychainBrowser
         menu.addItem(keychainBrowser)
 
         menu.addItem(NSMenuItem.separator())
 
-        let devModeStatus = makeItem("Developer Mode Status", action: #selector(devModeStatus))
+        let devModeStatus = makeItem(
+            VPhoneMenuText.Connect.developerModeStatus, action: #selector(devModeStatus)
+        )
         devModeStatus.isEnabled = false
         connectDevModeStatusItem = devModeStatus
         menu.addItem(devModeStatus)
 
         menu.addItem(NSMenuItem.separator())
 
-        let ping = makeItem("Ping", action: #selector(sendPing))
+        let ping = makeItem(VPhoneMenuText.Connect.ping, action: #selector(sendPing))
         ping.isEnabled = false
         connectPingItem = ping
         menu.addItem(ping)
 
-        let guestVersion = makeItem("Guest Version", action: #selector(queryGuestVersion))
+        let guestVersion = makeItem(
+            VPhoneMenuText.Connect.guestVersion, action: #selector(queryGuestVersion)
+        )
         guestVersion.isEnabled = false
         connectGuestVersionItem = guestVersion
         menu.addItem(guestVersion)
 
         menu.addItem(NSMenuItem.separator())
 
-        let clipGet = makeItem("Get Clipboard", action: #selector(getClipboard))
+        let clipGet = makeItem(VPhoneMenuText.Connect.getClipboard, action: #selector(getClipboard))
         clipGet.isEnabled = false
         clipboardGetItem = clipGet
         menu.addItem(clipGet)
 
-        let clipSet = makeItem("Set Clipboard Text...", action: #selector(setClipboardText))
+        let clipSet = makeItem(VPhoneMenuText.Connect.setClipboard, action: #selector(setClipboardText))
         clipSet.isEnabled = false
         clipboardSetItem = clipSet
         menu.addItem(clipSet)
 
         menu.addItem(NSMenuItem.separator())
 
-        let settingsGet = makeItem("Read Setting...", action: #selector(readSetting))
+        let settingsGet = makeItem(VPhoneMenuText.Connect.readSetting, action: #selector(readSetting))
         settingsGet.isEnabled = false
         settingsGetItem = settingsGet
         menu.addItem(settingsGet)
 
-        let settingsSet = makeItem("Write Setting...", action: #selector(writeSetting))
+        let settingsSet = makeItem(VPhoneMenuText.Connect.writeSetting, action: #selector(writeSetting))
         settingsSet.isEnabled = false
         settingsSetItem = settingsSet
         menu.addItem(settingsSet)

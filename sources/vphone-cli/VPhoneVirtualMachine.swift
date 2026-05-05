@@ -44,6 +44,50 @@ class VPhoneVirtualMachine: NSObject, VZVirtualMachineDelegate {
         let udid: String
     }
 
+    private static func networkDevices(
+        for manifest: VPhoneVirtualMachineManifest
+    ) throws -> [VZNetworkDeviceConfiguration] {
+        let net = VZVirtioNetworkDeviceConfiguration()
+
+        switch manifest.networkConfig.mode {
+        case .nat:
+            net.attachment = VZNATNetworkDeviceAttachment()
+            print("[vphone] Network: NAT")
+            return [net]
+
+        case .bridged:
+            let requested = manifest.networkConfig.bridgedInterface?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let interfaces = VZBridgedNetworkInterface.networkInterfaces
+
+            let interface: VZBridgedNetworkInterface?
+            if let requested, !requested.isEmpty {
+                interface = interfaces.first {
+                    $0.identifier == requested || $0.localizedDisplayName == requested
+                }
+            } else {
+                interface = interfaces.first
+            }
+
+            guard let interface else {
+                throw VPhoneError.bridgedInterfaceNotFound(requested ?? "<first available>")
+            }
+
+            net.attachment = VZBridgedNetworkDeviceAttachment(interface: interface)
+            let displayName = interface.localizedDisplayName ?? interface.identifier
+            print("[vphone] Network: bridged via \(interface.identifier) (\(displayName))")
+            return [net]
+
+        case .none:
+            print("[vphone] Network: disabled")
+            return []
+
+        case .hostOnly:
+            print("[vphone] Network: hostOnly requested but not implemented; disabled")
+            return []
+        }
+    }
+
     init(options: Options) throws {
         // --- Hardware model (PV=3) ---
         let hwModel = try VPhoneHardware.createModel()
@@ -182,10 +226,8 @@ class VPhoneVirtualMachine: NSObject, VZVirtualMachineDelegate {
         let attachment = try VZDiskImageStorageDeviceAttachment(url: options.diskURL, readOnly: false)
         config.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: attachment)]
 
-        // Network (shared NAT)
-        let net = VZVirtioNetworkDeviceConfiguration()
-        net.attachment = VZNATNetworkDeviceAttachment()
-        config.networkDevices = [net]
+        // Network
+        config.networkDevices = try Self.networkDevices(for: manifest)
 
         // Serial port (PL011 UART - pipes for input/output with boot detection)
         if let serialPort = Dynamic._VZPL011SerialPortConfiguration().asObject

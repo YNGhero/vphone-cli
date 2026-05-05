@@ -49,6 +49,21 @@ CFW_INPUT="cfw_input"
 CFW_JB_INPUT="cfw_jb_input"
 CFW_JB_ARCHIVE="cfw_jb_input.tar.zst"
 TEMP_DIR="$VM_DIR/.cfw_temp"
+LOCAL_DEBS_DIR_NAME="vphone-local-debs"
+
+# TrollStore Lite is intentionally cached on the host and copied into preboot
+# during the ramdisk phase.  This makes the "JB/TrollStore" variant deterministic:
+# first boot should not depend solely on apt reaching Havoc from inside the VM.
+TROLLSTORE_LITE_DEB="com.opa334.trollstorelite_2.1_iphoneos-arm64.deb"
+TROLLSTORE_LITE_URL="https://havoc.app/api/download/package/66d4ea2e4ce732df1fd82bd4/${TROLLSTORE_LITE_DEB}"
+TROLLSTORE_LITE_SHA256="aafe9b7ce5dc69cca996f64f5d1f79e0b483cd8600889db9d07c527172e68420"
+LDID_DEB="ldid_2.1.5-procursus7_iphoneos-arm64.deb"
+LDID_URL="https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1900/ldid/${LDID_DEB}"
+LDID_SHA256="f0808557064279e2e4febe443ed1e4fed76de42abf3491a45caca14915fd0895"
+LIBPLIST3_DEB="libplist3_2.2.0+git20230130.4b50a5a_iphoneos-arm64.deb"
+LIBPLIST3_URL="https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1900/libplist/${LIBPLIST3_DEB}"
+LIBPLIST3_SHA256="87f3e16108cc943d1c22a77a7f6bbcdef1d2f48bab0a23f867833e09dbd7d3ea"
+CUSTOM_SOURCES_FILE="vphone-extra-sources.list"
 
 SSH_PORT="${SSH_PORT:-2222}"
 SSH_PASS="alpine"
@@ -75,6 +90,8 @@ check_prerequisites() {
     command -v sshpass &>/dev/null || missing+=("sshpass")
     command -v ldid &>/dev/null || missing+=("ldid (brew install ldid-procursus)")
     command -v xcrun &>/dev/null || missing+=("xcrun (Xcode command line tools)")
+    command -v curl &>/dev/null || missing+=("curl")
+    command -v shasum &>/dev/null || missing+=("shasum")
     if ((${#missing[@]} > 0)); then
         die "Missing required tools: ${missing[*]}. Run: make setup_tools"
     fi
@@ -180,6 +197,135 @@ setup_cfw_jb_input() {
     die "JB mode: neither $CFW_JB_INPUT/ nor $CFW_JB_ARCHIVE found"
 }
 
+sha256_file() {
+    shasum -a 256 "$1" | awk '{print $1}'
+}
+
+ensure_cached_deb() {
+    local label="$1" url="$2" output="$3" expected_sha="$4"
+    local actual_sha tmp
+
+    if [[ -f "$output" ]]; then
+        actual_sha="$(sha256_file "$output")"
+        if [[ "$actual_sha" == "$expected_sha" ]]; then
+            echo "  [+] $label cached: $output"
+            return
+        fi
+        echo "  [!] $label cache checksum mismatch; re-downloading"
+        rm -f "$output"
+    fi
+
+    echo "  [*] Downloading $label..."
+    tmp="${output}.tmp"
+    rm -f "$tmp"
+    curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 \
+        -o "$tmp" "$url"
+    actual_sha="$(sha256_file "$tmp")"
+    if [[ "$actual_sha" != "$expected_sha" ]]; then
+        rm -f "$tmp"
+        die "$label checksum mismatch: got $actual_sha expected $expected_sha"
+    fi
+    mv "$tmp" "$output"
+    echo "  [+] $label downloaded: $output"
+}
+
+ensure_trollstore_local_debs() {
+    local deb_dir="$JB_INPUT_DIR/jb/$LOCAL_DEBS_DIR_NAME"
+    mkdir -p "$deb_dir"
+
+    echo ""
+    echo "[+] Ensuring local TrollStore Lite payloads..."
+    ensure_cached_deb "libplist3" "$LIBPLIST3_URL" "$deb_dir/$LIBPLIST3_DEB" "$LIBPLIST3_SHA256"
+    ensure_cached_deb "ldid" "$LDID_URL" "$deb_dir/$LDID_DEB" "$LDID_SHA256"
+    ensure_cached_deb "TrollStore Lite" "$TROLLSTORE_LITE_URL" "$deb_dir/$TROLLSTORE_LITE_DEB" "$TROLLSTORE_LITE_SHA256"
+}
+
+generate_custom_cydia_sources() {
+    local raw="${VPHONE_CYDIA_SOURCES:-${VPHONE_APT_SOURCES:-}}"
+    local out="$JB_INPUT_DIR/jb/$CUSTOM_SOURCES_FILE"
+
+    rm -f "$out"
+    [[ -n "$raw" ]] || return 0
+
+    VPHONE_CYDIA_SOURCES="$raw" "$PYTHON3" - "$out" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+raw = os.environ.get("VPHONE_CYDIA_SOURCES", "")
+
+lines: list[str] = []
+for entry in re.split(r"[\n,;]+", raw):
+    entry = entry.strip()
+    if not entry:
+        continue
+    if entry.lower() in {"default", "none", "skip", "no", "0"}:
+        continue
+
+    if entry.startswith("#"):
+        lines.append(entry)
+    elif entry.startswith("deb ") or entry.startswith("deb-src "):
+        lines.append(entry)
+    elif "|" in entry:
+        parts = [part.strip() for part in entry.split("|") if part.strip()]
+        if len(parts) == 1:
+            url, suite, components = parts[0], "./", ""
+        elif len(parts) == 2:
+            url, suite, components = parts[0], parts[1], ""
+        else:
+            url, suite, components = parts[0], parts[1], " ".join(parts[2:])
+        lines.append(f"deb {url} {suite}{(' ' + components) if components else ''}")
+    else:
+        url = entry
+        lines.append(f"deb {url} ./")
+
+if lines:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        "# Added by vphone-cli. Configure with VPHONE_CYDIA_SOURCES.\n"
+        + "\n".join(lines)
+        + "\n",
+        encoding="utf-8",
+    )
+PY
+
+    if [[ -f "$out" ]]; then
+        echo ""
+        echo "[+] Custom Cydia/Sileo sources:"
+        sed 's/^/    /' "$out"
+    fi
+}
+
+copy_trollstore_local_debs_to_preboot() {
+    local deb_dir="$JB_INPUT_DIR/jb/$LOCAL_DEBS_DIR_NAME"
+    [[ -d "$deb_dir" ]] || die "Missing local TrollStore payload dir: $deb_dir"
+
+    echo "  Copying local TrollStore payloads to preboot..."
+    ssh_cmd "/bin/rm -rf /mnt5/$BOOT_HASH/$LOCAL_DEBS_DIR_NAME"
+    ssh_cmd "/bin/mkdir -p /mnt5/$BOOT_HASH/$LOCAL_DEBS_DIR_NAME"
+    for deb in "$deb_dir"/*.deb; do
+        [[ -f "$deb" ]] || continue
+        scp_to "$deb" "/mnt5/$BOOT_HASH/$LOCAL_DEBS_DIR_NAME/"
+    done
+    ssh_cmd "/bin/chmod 0755 /mnt5/$BOOT_HASH/$LOCAL_DEBS_DIR_NAME"
+    ssh_cmd "/bin/chmod 0644 /mnt5/$BOOT_HASH/$LOCAL_DEBS_DIR_NAME/*.deb 2>/dev/null || true"
+    echo "  [+] Local TrollStore payloads staged at /private/preboot/$BOOT_HASH/$LOCAL_DEBS_DIR_NAME"
+}
+
+copy_custom_cydia_sources_to_preboot() {
+    local source_file="$JB_INPUT_DIR/jb/$CUSTOM_SOURCES_FILE"
+    [[ -s "$source_file" ]] || return 0
+
+    echo "  Copying custom Cydia/Sileo sources to preboot..."
+    scp_to "$source_file" "/mnt5/$BOOT_HASH/$CUSTOM_SOURCES_FILE"
+    ssh_cmd "/bin/chmod 0644 /mnt5/$BOOT_HASH/$CUSTOM_SOURCES_FILE"
+    echo "  [+] Custom sources staged at /private/preboot/$BOOT_HASH/$CUSTOM_SOURCES_FILE"
+}
+
 # ── Apply dev overlay (replace rpcserver_ios in iosbinpack64) ──
 apply_dev_overlay() {
     local dev_bin
@@ -208,6 +354,8 @@ JB_INPUT_DIR="$VM_DIR/$CFW_JB_INPUT"
 echo ""
 echo "[+] JB input resources: $JB_INPUT_DIR"
 check_prerequisites
+ensure_trollstore_local_debs
+generate_custom_cydia_sources
 
 mkdir -p "$TEMP_DIR"
 
@@ -303,6 +451,8 @@ scp_to "$BOOTSTRAP_TAR" "/mnt5/$BOOT_HASH/bootstrap-iphoneos-arm64.tar"
 if [[ -f "$SILEO_DEB" ]]; then
     scp_to "$SILEO_DEB" "/mnt5/$BOOT_HASH/org.coolstar.sileo_2.5.1_iphoneos-arm64.deb"
 fi
+copy_trollstore_local_debs_to_preboot
+copy_custom_cydia_sources_to_preboot
 
 JB_DIR_NAME="jb-vphone"
 ssh_cmd "/bin/rm -rf /mnt5/$BOOT_HASH/jb"

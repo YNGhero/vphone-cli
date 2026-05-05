@@ -330,3 +330,7 @@ setup_logs/
 /research/xnu
 /vm
 /vm.backups
+
+/vm.instances
+
+/vphone_instance.conf

@@ -6,9 +6,28 @@ struct VPhoneCLI: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "vphone-cli",
         abstract: "Boot a virtual iPhone or patch firmware with the Swift pipeline",
-        subcommands: [VPhoneBootCLI.self, PatchFirmwareCLI.self, PatchComponentCLI.self],
+        subcommands: [VPhoneBootCLI.self, VPhoneManagerCLI.self, PatchFirmwareCLI.self, PatchComponentCLI.self],
         defaultSubcommand: VPhoneBootCLI.self
     )
+}
+
+struct VPhoneManagerCLI: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "manager",
+        abstract: "Open the standalone vphone instance manager"
+    )
+
+    @Option(name: .customLong("project-root"), help: "Path to the vphone-cli project root.")
+    var projectRoot: String?
+
+    var projectRootURL: URL {
+        if let projectRoot, !projectRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return URL(fileURLWithPath: projectRoot).standardizedFileURL
+        }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL
+    }
+
+    mutating func run() throws {}
 }
 
 struct VPhoneBootCLI: ParsableCommand {

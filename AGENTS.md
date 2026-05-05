@@ -170,3 +170,48 @@ The binary requires private entitlements for PV=3 virtualization. Always use `ma
 - **Typography:** System monospace (SF Mono / Menlo) for UI and log output.
 - **Depth:** Flat with 1px borders (`#333333`). No shadows.
 - **Spacing:** 8px base unit, 12px component padding, 16px section gaps.
+
+
+<claude-mem-context>
+# Memory Context
+
+# [vphone-cli] recent context, 2026-05-05 7:06am GMT+8
+
+Legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision 🚨security_alert 🔐security_note
+Format: ID TIME TYPE TITLE
+Fetch details: get_observations([IDs]) | Search: mem-search skill
+
+Stats: 28 obs (9,422t read) | 116,962t work | 92% savings
+
+### May 5, 2026
+1555 6:53a 🔵 Explored the vphone-cli project from GitHub
+1556 " 🔵 vphone-cli project analysis — virtual iPhones via Apple Virtualization.framework
+1557 " 🔵 Additional vphone-cli details: VM backup, FAQ troubleshooting, and Make targets
+1558 6:54a 🔵 vphone-cli Binary Patch Comparison — detailed patch matrix across 4 firmware variants
+1559 " 🔵 vphone-cli project structure — Swift Package Manager layout and vphoned daemon architecture
+1560 " 🔵 vphone-cli CLI architecture — 3 subcommands over ArgumentParser
+1561 " 🔵 VPhoneVirtualMachine — VM initialization with extensive private API usage via Dynamic library
+1562 " 🔵 VPhoneControl — vsock-based host-guest protocol with auto-update capability
+1563 6:57a 🔵 vphone-cli entitlements — 7 private entitlements for virtualization research
+1564 " 🟣 VPhoneHostControl — Unix domain socket server for programmatic VM automation
+1565 7:00a 🔵 VPhoneControl API surface — 20+ vsock-based host-guest protocol methods
+1566 7:02a 🔵 User requested local instance execution attempt
+1567 " 🔵 vphone-cli project plan initialized for local VM testing
+1568 " 🔵 Host assessment reveals no VM support and missing build artifacts
+1569 7:03a 🔵 Host meets Apple Silicon requirements but needs submodule init and build
+1570 " ✅ Git submodule initialization started for vphone-cli dependencies
+1571 " ✅ Submodule cloning progressing — 6 of 8 repos cloned
+1572 " ✅ All git submodules initialized and checked out successfully
+1573 " ✅ vphone-cli build started with Swift 6.3 on macOS 26 arm64
+1574 " ✅ Swift build compiling — no output yet after 5 seconds
+1575 7:05a ✅ vphone-cli build completed and signed successfully
+1576 " 🔵 Makefile boot workflow examined for VM launch targets
+1577 " 🔵 boot_binary_check reveals host missing virtualization requirements
+1578 " 🔵 VM ROMs found in Virtualization.framework — Apple Internal macOS confirmed
+1579 " ✅ VM directory created with full structure and config.plist manifest
+1580 " 🔵 amfidont AMFI bypass script examined for entitlement workaround
+1581 " 🔵 amfidont and amfree not installed — AMFI bypass path unavailable
+1582 " 🔵 Full environment assessment completed — VM not bootable on this host
+
+Access 117k tokens of past work via get_observations([IDs]) or mem-search skill.
+</claude-mem-context>

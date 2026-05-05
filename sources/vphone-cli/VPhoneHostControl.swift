@@ -17,7 +17,10 @@ import ImageIO
 ///   {"t":"tap","x":645,"y":1398}                → tap at pixel coordinates
 ///   {"t":"swipe","x1":645,"y1":2600,"x2":645,"y2":1400,"ms":300}  → swipe
 ///   {"t":"key","name":"home"}                   → hardware key (home/power/volup/voldown)
+///   {"t":"type_ascii","text":"Hello"}           → type ASCII via VM keyboard events
 ///   {"t":"type","text":"Hello"}                 → set guest clipboard
+///   {"t":"show_window","screen":false}          → reveal hidden GUI window
+///   {"t":"terminate_host","screen":false}       → quit vphone-cli host process
 ///
 /// All commands except "screenshot" wait briefly then capture a compact screen
 /// image returned as `"image":"<base64>"` in the response.  Pass `"screen":false`
@@ -31,6 +34,8 @@ class VPhoneHostControl {
     private weak var captureView: VPhoneVirtualMachineView?
     private var screenRecorder: VPhoneScreenRecorder?
     private weak var control: VPhoneControl?
+    private weak var keyHelper: VPhoneKeyHelper?
+    private var showWindowHandler: (() -> Void)?
 
     /// Thread-safe box for passing results between main actor and accept queue.
     private final class ResultBox: @unchecked Sendable {
@@ -38,6 +43,7 @@ class VPhoneHostControl {
         var error: String?
         var ok = false
         var imageBase64: String?
+        var message: String?
     }
 
     /// Screen pixel dimensions for coordinate mapping.
@@ -55,14 +61,18 @@ class VPhoneHostControl {
         captureView: VPhoneVirtualMachineView,
         screenRecorder: VPhoneScreenRecorder,
         control: VPhoneControl,
+        keyHelper: VPhoneKeyHelper,
         screenWidth: Int,
-        screenHeight: Int
+        screenHeight: Int,
+        showWindow: (() -> Void)? = nil
     ) {
         self.captureView = captureView
         self.screenRecorder = screenRecorder
         self.control = control
+        self.keyHelper = keyHelper
         self.screenWidth = screenWidth
         self.screenHeight = screenHeight
+        self.showWindowHandler = showWindow
 
         unlink(socketPath)
 
@@ -244,6 +254,56 @@ class VPhoneHostControl {
         let screenDelay = json["delay"] as? Int ?? 500
 
         switch type {
+        case "terminate_host", "quit", "shutdown_host":
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard controller != nil else {
+                    result.error = "host-control unavailable"
+                    return
+                }
+                result.ok = true
+                result.message = "terminating host process"
+
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    NSApp.terminate(nil)
+                }
+            }
+
+            semaphore.wait()
+            writeResponse(
+                fd, ok: result.ok, error: result.error, image: nil,
+                message: result.message
+            )
+
+        case "show_window", "focus_window", "activate":
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let controller else {
+                    result.error = "host-control unavailable"
+                    return
+                }
+                controller.showWindowHandler?()
+                result.ok = true
+                result.message = "window shown"
+                if wantScreen {
+                    try? await Task.sleep(nanoseconds: UInt64(screenDelay) * 1_000_000)
+                    result.imageBase64 = await controller.captureCompactScreenshot()
+                }
+            }
+
+            semaphore.wait()
+            writeResponse(
+                fd, ok: result.ok, error: result.error, image: result.imageBase64,
+                message: result.message
+            )
+
         case "screenshot":
             let outputPath = json["path"] as? String
             let semaphore = DispatchSemaphore(value: 0)
@@ -377,6 +437,41 @@ class VPhoneHostControl {
             semaphore.wait()
             writeResponse(fd, ok: result.ok, error: result.error, image: result.imageBase64)
 
+        case "type_ascii":
+            guard let text = json["text"] as? String else {
+                writeResponse(fd, ok: false, error: "type_ascii requires text")
+                return
+            }
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let controller, let keyHelper = controller.keyHelper else {
+                    result.error = "keyboard helper not available"
+                    return
+                }
+                let counts = keyHelper.typeString(text)
+                result.ok = counts.typed > 0 || text.isEmpty
+                result.message = "typed=\(counts.typed) skipped=\(counts.skipped)"
+                if counts.typed == 0, !text.isEmpty {
+                    result.error = "no supported ASCII characters to type; skipped=\(counts.skipped)"
+                    result.ok = false
+                    return
+                }
+                if wantScreen {
+                    let typingDelayMs = min((counts.typed * 20) + screenDelay + 100, 10_000)
+                    try? await Task.sleep(nanoseconds: UInt64(typingDelayMs) * 1_000_000)
+                    result.imageBase64 = await controller.captureCompactScreenshot()
+                }
+            }
+
+            semaphore.wait()
+            writeResponse(
+                fd, ok: result.ok, error: result.error, image: result.imageBase64,
+                message: result.message
+            )
+
         case "type":
             guard let text = json["text"] as? String else {
                 writeResponse(fd, ok: false, error: "type requires text")
@@ -406,6 +501,46 @@ class VPhoneHostControl {
             semaphore.wait()
             writeResponse(fd, ok: result.ok, error: result.error, image: result.imageBase64)
 
+        case "install_ipa":
+            guard let path = json["path"] as? String else {
+                writeResponse(fd, ok: false, error: "install_ipa requires path")
+                return
+            }
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let controller, let ctl = controller.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+
+                let url = URL(fileURLWithPath: path)
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    result.error = "IPA/TIPA not found: \(url.path)"
+                    return
+                }
+                guard VPhoneInstallPackage.isSupportedFile(url) else {
+                    result.error = "unsupported package type: \(url.path)"
+                    return
+                }
+
+                do {
+                    result.message = try await ctl.installIPA(localURL: url)
+                    result.ok = true
+                    if wantScreen {
+                        try? await Task.sleep(nanoseconds: UInt64(screenDelay) * 1_000_000)
+                        result.imageBase64 = await controller.captureCompactScreenshot()
+                    }
+                } catch {
+                    result.error = "\(error)"
+                }
+            }
+
+            semaphore.wait()
+            writeResponse(fd, ok: result.ok, error: result.error, image: result.imageBase64, message: result.message)
+
         default:
             writeResponse(fd, ok: false, error: "unknown command: \(type)")
         }
@@ -417,7 +552,7 @@ class VPhoneHostControl {
         var buffer = [UInt8](repeating: 0, count: 4096)
         var accumulated = Data()
 
-        while accumulated.count < 4096 {
+        while accumulated.count < 1_048_576 {
             let n = read(fd, &buffer, buffer.count)
             guard n > 0 else { break }
             accumulated.append(contentsOf: buffer[..<n])
@@ -431,12 +566,14 @@ class VPhoneHostControl {
     }
 
     private nonisolated static func writeResponse(
-        _ fd: Int32, ok: Bool, path: String? = nil, error: String? = nil, image: String? = nil
+        _ fd: Int32, ok: Bool, path: String? = nil, error: String? = nil, image: String? = nil,
+        message: String? = nil
     ) {
         var dict: [String: Any] = ["ok": ok]
         if let path { dict["path"] = path }
         if let error { dict["error"] = error }
         if let image { dict["image"] = image }
+        if let message { dict["msg"] = message }
 
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
               var json = String(data: data, encoding: .utf8)

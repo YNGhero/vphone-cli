@@ -5,6 +5,7 @@ enum VPhoneError: Error, CustomStringConvertible {
     case romNotFound(String)
     case diskNotFound(String)
     case invalidKernelDebugPort(Int)
+    case bridgedInterfaceNotFound(String)
     case manifestLoadFailed(path: String, underlying: Error)
     case manifestParseFailed(path: String, underlying: Error)
     case manifestWriteFailed(path: String, underlying: Error)
@@ -25,6 +26,8 @@ enum VPhoneError: Error, CustomStringConvertible {
             "Disk image not found: \(p)"
         case let .invalidKernelDebugPort(port):
             "Invalid kernel debug port: \(port) (expected 6000...65535)"
+        case let .bridgedInterfaceNotFound(identifier):
+            "Bridged network interface not found: \(identifier)"
         case let .manifestLoadFailed(path: path, underlying: _):
             "Failed to load manifest from \(path)"
         case let .manifestParseFailed(path: path, underlying: _):

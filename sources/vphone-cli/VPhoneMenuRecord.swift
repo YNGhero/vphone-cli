@@ -5,13 +5,15 @@ import AppKit
 extension VPhoneMenuController {
     func buildRecordMenu() -> NSMenuItem {
         let item = NSMenuItem()
-        let menu = NSMenu(title: "Record")
-        let toggle = makeItem("Start Recording", action: #selector(toggleRecording))
+        let menu = NSMenu(title: VPhoneMenuText.Record.menu)
+        let toggle = makeItem(VPhoneMenuText.Record.start, action: #selector(toggleRecording))
         recordingItem = toggle
         menu.addItem(toggle)
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(makeItem("Copy Screenshot to Clipboard", action: #selector(copyScreenshotToClipboard)))
-        menu.addItem(makeItem("Save Screenshot to File", action: #selector(saveScreenshotToFile)))
+        menu.addItem(
+            makeItem(VPhoneMenuText.Record.copyScreenshot, action: #selector(copyScreenshotToClipboard))
+        )
+        menu.addItem(makeItem(VPhoneMenuText.Record.saveScreenshot, action: #selector(saveScreenshotToFile)))
         item.submenu = menu
         return item
     }
@@ -20,7 +22,7 @@ extension VPhoneMenuController {
         if screenRecorder?.isRecording == true {
             Task { @MainActor in
                 let url = await screenRecorder?.stopRecording()
-                recordingItem?.title = "Start Recording"
+                recordingItem?.title = VPhoneMenuText.Record.start
                 if let url {
                     showRecordingSavedAlert(url: url)
                 }
@@ -32,7 +34,7 @@ extension VPhoneMenuController {
             }
             do {
                 try screenRecorder?.startRecording(view: view)
-                recordingItem?.title = "Stop Recording"
+                recordingItem?.title = VPhoneMenuText.Record.stop
             } catch {
                 showAlert(title: "Recording", message: "\(error)", style: .warning)
             }
@@ -107,7 +109,6 @@ extension VPhoneMenuController {
         panel.contentView?.addSubview(reveal)
         panel.contentView?.addSubview(ok)
 
-        var shouldReveal = false
         reveal.target = nil
         reveal.action = nil
 
@@ -119,7 +120,7 @@ extension VPhoneMenuController {
         class RevealHelper: NSObject {
             var action: () -> Void
             init(_ action: @escaping () -> Void) { self.action = action }
-            @objc func clicked() { action() }
+            @MainActor @objc func clicked() { action() }
         }
         let helper = RevealHelper {
             NSApp.stopModal(withCode: NSApplication.ModalResponse(rawValue: 100))

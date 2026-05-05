@@ -30,7 +30,7 @@ struct VPhoneVirtualMachineManifest: Codable {
 
     // MARK: - Network
 
-    /// Network configuration (NAT mode for vphone)
+    /// Network configuration.
     let networkConfig: NetworkConfig
 
     // MARK: - Storage
@@ -79,6 +79,7 @@ struct VPhoneVirtualMachineManifest: Codable {
     struct NetworkConfig: Codable {
         let mode: NetworkMode
         let macAddress: String
+        let bridgedInterface: String?
 
         enum NetworkMode: String, Codable {
             case nat
@@ -87,7 +88,7 @@ struct VPhoneVirtualMachineManifest: Codable {
             case none
         }
 
-        static let `default` = NetworkConfig(mode: .nat, macAddress: "")
+        static let `default` = NetworkConfig(mode: .nat, macAddress: "", bridgedInterface: nil)
     }
 
     struct ROMImages: Codable {

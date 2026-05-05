@@ -12,6 +12,12 @@ do {
         app.delegate = delegate
         app.run()
 
+    case let manager as VPhoneManagerCLI:
+        let app = NSApplication.shared
+        let delegate = VPhoneManagerAppDelegate(cli: manager)
+        app.delegate = delegate
+        app.run()
+
     case var patch as PatchFirmwareCLI:
         try patch.run()
 

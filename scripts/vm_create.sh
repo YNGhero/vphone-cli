@@ -21,6 +21,8 @@ VM_DIR="${VM_DIR:-vm}"
 DISK_SIZE_GB="${DISK_SIZE:-64}"
 CPU_COUNT="${CPU:-8}"
 MEMORY_MB="${MEMORY:-8192}"
+NETWORK_MODE="${NETWORK_MODE:-nat}"
+NETWORK_INTERFACE="${NETWORK_INTERFACE:-}"
 SEP_STORAGE_SIZE=$((512 * 1024)) # 512 KB (same as vrevm)
 
 # Script directory
@@ -42,6 +44,14 @@ while [[ $# -gt 0 ]]; do
             DISK_SIZE_GB="$2"
             shift 2
             ;;
+        --network-mode)
+            NETWORK_MODE="$2"
+            shift 2
+            ;;
+        --network-interface)
+            NETWORK_INTERFACE="$2"
+            shift 2
+            ;;
         --rom)
             ROM_SRC="$2"
             shift 2
@@ -51,11 +61,13 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h | --help)
-            echo "Usage: $0 [--dir VM] [--disk-size 64] [--rom path] [--seprom path]"
+            echo "Usage: $0 [--dir VM] [--disk-size 64] [--network-mode nat|bridged|none] [--network-interface en0] [--rom path] [--seprom path]"
             echo ""
             echo "Options:"
             echo "  --dir       VM directory name (default: VM)"
             echo "  --disk-size Disk image size in GB (default: 64)"
+            echo "  --network-mode Network mode: nat, bridged, none (default: nat)"
+            echo "  --network-interface BSD interface for bridged mode, e.g. en0"
             echo "  --rom       Path to AVPBooter ROM (default: framework built-in)"
             echo "  --seprom    Path to AVPSEPBooter ROM (default: framework built-in)"
             exit 0
@@ -69,9 +81,18 @@ done
 
 DISK_SIZE_BYTES=$((DISK_SIZE_GB * 1024 * 1024 * 1024))
 
+case "$NETWORK_MODE" in
+    nat|bridged|none) ;;
+    *)
+        echo "ERROR: unsupported NETWORK_MODE: ${NETWORK_MODE} (expected nat, bridged, or none)"
+        exit 1
+        ;;
+esac
+
 echo "=== vphone create_vm ==="
 echo "Directory : ${VM_DIR}"
 echo "Disk size : ${DISK_SIZE_GB} GB"
+echo "Network   : ${NETWORK_MODE}${NETWORK_INTERFACE:+ (${NETWORK_INTERFACE})}"
 echo "AVPBooter : ${ROM_SRC}"
 echo "AVPSEPBooter: ${SEPROM_SRC}"
 echo ""
@@ -147,11 +168,16 @@ touch "${VM_DIR}/.gitkeep"
 
 # --- Generate VM manifest ---
 echo "[5/4] Generating VM manifest (config.plist)"
-"${SCRIPT_DIR}/vm_manifest.py" \
-    --vm-dir "${VM_DIR}" \
-    --cpu "${CPU_COUNT}" \
-    --memory "${MEMORY_MB}" \
-    --disk-size "${DISK_SIZE_GB}" || {
+manifest_args=(
+    --vm-dir "${VM_DIR}"
+    --cpu "${CPU_COUNT}"
+    --memory "${MEMORY_MB}"
+    --disk-size "${DISK_SIZE_GB}"
+    --network-mode "${NETWORK_MODE}"
+)
+[[ -n "$NETWORK_INTERFACE" ]] && manifest_args+=(--network-interface "${NETWORK_INTERFACE}")
+
+"${SCRIPT_DIR}/vm_manifest.py" "${manifest_args[@]}" || {
     echo "ERROR: Failed to generate VM manifest"
     exit 1
 }

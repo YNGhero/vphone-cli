@@ -6,24 +6,24 @@ import Foundation
 extension VPhoneMenuController {
     func buildAppsMenu() -> NSMenuItem {
         let item = NSMenuItem()
-        let menu = NSMenu(title: "Apps")
+        let menu = NSMenu(title: VPhoneMenuText.Apps.menu)
         menu.autoenablesItems = false
 
-        let browse = makeItem("App Browser", action: #selector(openAppBrowser))
+        let browse = makeItem(VPhoneMenuText.Apps.browser, action: #selector(openAppBrowser))
         browse.isEnabled = false
         appsListItem = browse
         menu.addItem(browse)
 
         menu.addItem(NSMenuItem.separator())
 
-        let openURL = makeItem("Open URL...", action: #selector(openURL))
+        let openURL = makeItem(VPhoneMenuText.Apps.openURL, action: #selector(openURL))
         openURL.isEnabled = false
         appsOpenURLItem = openURL
         menu.addItem(openURL)
 
         menu.addItem(NSMenuItem.separator())
 
-        let install = makeItem("Install IPA/TIPA...", action: #selector(installIPAFromDisk))
+        let install = makeItem(VPhoneMenuText.Apps.installPackage, action: #selector(installIPAFromDisk))
         install.isEnabled = false
         installPackageItem = install
         menu.addItem(install)
@@ -42,6 +42,7 @@ extension VPhoneMenuController {
 
     func updateInstallAvailability(available: Bool) {
         installPackageItem?.isEnabled = available
+        instanceInstallPackageItem?.isEnabled = available
     }
 
     @objc func openAppBrowser() {

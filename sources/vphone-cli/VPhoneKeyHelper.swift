@@ -100,20 +100,25 @@ class VPhoneKeyHelper {
         typeString(string)
     }
 
-    func typeString(_ string: String) {
+    @discardableResult
+    func typeString(_ string: String) -> (typed: Int, skipped: Int) {
         guard let keyboard = firstKeyboard else {
             print("[keys] No keyboard found")
-            return
+            return (0, string.count)
         }
 
         var delay: TimeInterval = 0
         let interval: TimeInterval = 0.02
+        var typed = 0
+        var skipped = 0
 
         for char in string {
             guard let (keyCode, needsShift) = asciiToVK(char) else {
                 print("[keys] Skipping unsupported char: '\(char)'")
+                skipped += 1
                 continue
             }
+            typed += 1
 
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 var events: [AnyObject] = []
@@ -138,6 +143,7 @@ class VPhoneKeyHelper {
 
             delay += interval
         }
+        return (typed, skipped)
     }
 
     // MARK: - ASCII -> Apple VK Code (US Layout)

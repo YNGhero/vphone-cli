@@ -53,6 +53,8 @@ BOOT_ANALYSIS_TIMEOUT="${BOOT_ANALYSIS_TIMEOUT:-300}"
 BOOT_PROMPT_FALLBACK_TIMEOUT="${BOOT_PROMPT_FALLBACK_TIMEOUT:-60}"
 BOOT_BASH_PROMPT_REGEX="${BOOT_BASH_PROMPT_REGEX:-bash-[0-9]+(\.[0-9]+)+#}"
 BOOT_PANIC_REGEX="${BOOT_PANIC_REGEX:-(^|[^p])(panic|kernel panic|panic\\.apple\\.com|stackshot succeeded)}"
+SKIP_BOOT_ANALYSIS_RAW="${SKIP_BOOT_ANALYSIS:-0}"
+SKIP_BOOT_ANALYSIS=0
 PMD3_BRIDGE="${PMD3_BRIDGE:-${PROJECT_ROOT}/scripts/pymobiledevice3_bridge.py}"
 NONE_INTERACTIVE_RAW="${NONE_INTERACTIVE:-0}"
 NONE_INTERACTIVE=0
@@ -323,12 +325,19 @@ parse_bool() {
 }
 
 setup_sudo_noninteractive() {
+  if [[ -z "${SUDO_PASSWORD:-}" && -n "${VPHONE_SUDO_PASSWORD:-}" ]]; then
+    SUDO_PASSWORD="$VPHONE_SUDO_PASSWORD"
+  fi
   [[ -n "${SUDO_PASSWORD:-}" ]] || return 0
+  VPHONE_SUDO_PASSWORD="$SUDO_PASSWORD"
+  export SUDO_PASSWORD VPHONE_SUDO_PASSWORD
 
   SUDO_ASKPASS_SCRIPT="$(mktemp "${TMPDIR:-/tmp}/vphone-sudo-askpass.XXXXXX")"
-  cat >"$SUDO_ASKPASS_SCRIPT" <<'EOF'
+  local password_literal
+  printf -v password_literal '%q' "$SUDO_PASSWORD"
+  cat >"$SUDO_ASKPASS_SCRIPT" <<EOF
 #!/bin/sh
-printf '%s\n' "${SUDO_PASSWORD:-}"
+printf '%s\n' $password_literal
 EOF
   chmod 700 "$SUDO_ASKPASS_SCRIPT"
   export SUDO_ASKPASS="$SUDO_ASKPASS_SCRIPT"
@@ -979,8 +988,10 @@ Options:
   --skip-project-setup    Skip setup_tools/build stage.
 
 Environment:
-  NONE_INTERACTIVE=1      Auto-continue first-boot prompts + run final boot analysis.
+  NONE_INTERACTIVE=1      Auto-continue first-boot prompts.
+  SKIP_BOOT_ANALYSIS=1    Skip the optional final boot-analysis pass after setup.
   SUDO_PASSWORD=...       Preload sudo credential via askpass.
+  VPHONE_SUDO_PASSWORD=... Same as SUDO_PASSWORD; used by one-click scripts.
   NO_BINPACK=1            Excludes the SSH, VNC, ... binaries from being installed (patchless-only, currently)
   NO_VPHONED=1            Excludes vphoned from being installed (patchless-only, currently)
 EOF
@@ -1003,6 +1014,9 @@ main() {
   fi
   if parse_bool "$NO_VPHONED_RAW"; then
     NO_VPHONED=1
+  fi
+  if parse_bool "$SKIP_BOOT_ANALYSIS_RAW"; then
+    SKIP_BOOT_ANALYSIS=1
   fi
   setup_sudo_noninteractive
 
@@ -1028,7 +1042,7 @@ main() {
     mode_label="less"
   fi
 
-  echo "[*] setup_machine mode: ${mode_label}, project_setup=$([[ "$SKIP_PROJECT_SETUP" -eq 1 ]] && echo "skip" || echo "run"), non_interactive=${NONE_INTERACTIVE}, no_binpack=${NO_BINPACK}, no_vphoned=${NO_VPHONED}"
+  echo "[*] setup_machine mode: ${mode_label}, project_setup=$([[ "$SKIP_PROJECT_SETUP" -eq 1 ]] && echo "skip" || echo "run"), non_interactive=${NONE_INTERACTIVE}, skip_boot_analysis=${SKIP_BOOT_ANALYSIS}, no_binpack=${NO_BINPACK}, no_vphoned=${NO_VPHONED}"
 
   if [[ "$SKIP_PROJECT_SETUP" -eq 1 ]]; then
     echo ""
@@ -1129,6 +1143,12 @@ main() {
   echo ""
   echo "=== Done ==="
   echo "Setup completed."
+
+  if [[ "$SKIP_BOOT_ANALYSIS" -eq 1 ]]; then
+    echo "[*] SKIP_BOOT_ANALYSIS=1: skipping optional final boot-analysis pass."
+    echo "    Start the VM normally with make boot or the generated launch_gui.command."
+    return 0
+  fi
 
   echo "=== Boot analysis ==="
   if [[ "$LESS_MODE" -eq 0 ]]; then

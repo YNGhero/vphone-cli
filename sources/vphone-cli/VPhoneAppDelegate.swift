@@ -11,6 +11,7 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
     private var fileWindowController: VPhoneFileWindowController?
     private var keychainWindowController: VPhoneKeychainWindowController?
     private var appWindowController: VPhoneAppWindowController?
+    private var instanceWindowController: VPhoneInstanceWindowController?
     private var locationProvider: VPhoneLocationProvider?
     private var hostControl: VPhoneHostControl?
     private var sigintSource: DispatchSourceSignal?
@@ -22,6 +23,17 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_: Notification) {
+        // The VM host process must stay alive even when its window is hidden or
+        // the launcher script exits.  AppKit automatic/sudden termination can
+        // otherwise reap a windowless background app, leaving stale sockets and
+        // confusing the multi-instance manager.
+        ProcessInfo.processInfo.disableAutomaticTermination("vphone VM is running")
+        ProcessInfo.processInfo.disableSuddenTermination()
+
+        // Make sidebar icon tooltips appear quickly. This is app-local via UserDefaults,
+        // not a global macOS defaults write. Value is in milliseconds.
+        UserDefaults.standard.set(120, forKey: "NSInitialToolTipDelay")
+
         NSApp.setActivationPolicy(cli.noGraphics ? .prohibited : .regular)
 
         signal(SIGINT, SIG_IGN)
@@ -116,8 +128,14 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
             let appWC = VPhoneAppWindowController()
             appWindowController = appWC
 
+            let projectRootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            let instanceWC = VPhoneInstanceWindowController(projectRootURL: projectRootURL)
+            instanceWindowController = instanceWC
+
             let mc = VPhoneMenuController(keyHelper: keyHelper, control: control)
             mc.vm = vm
+            mc.vmDirectoryURL = options.configURL.deletingLastPathComponent()
+            mc.projectRootURL = projectRootURL
             mc.captureView = wc.captureView
             mc.touchIDMonitor = wc.touchIDMonitor
             mc.onFilesPressed = { [weak fileWC, weak control] in
@@ -132,12 +150,24 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
                 guard let appWC, let control else { return }
                 appWC.showWindow(control: control)
             }
+            mc.onInstanceManagerPressed = { [weak instanceWC] in
+                instanceWC?.showWindow()
+            }
             if let provider = locationProvider {
                 mc.locationProvider = provider
             }
             let recorder = VPhoneScreenRecorder()
             mc.screenRecorder = recorder
             menuController = mc
+
+            wc.onInstallPackagePressed = { [weak mc] in mc?.installIPAFromDisk() }
+            wc.onImportPhotoPressed = { [weak mc] in mc?.importPhotoToAlbum() }
+            wc.onTypeASCIIPressed = { [weak mc] in mc?.typeFromClipboard() }
+            wc.onDeletePhotosPressed = { [weak mc] in mc?.deleteAllPhotosFromAlbum() }
+            wc.onScreenshotPressed = { [weak mc] in mc?.saveScreenshotToFile() }
+            wc.onRebootPressed = { [weak mc] in mc?.rebootGuest() }
+            wc.onRespringPressed = { [weak mc] in mc?.respringGuest() }
+            wc.onConnectionInfoPressed = { [weak mc] in mc?.showConnectionInfo() }
 
             let socketPath = options.configURL
                 .deletingLastPathComponent()
@@ -147,13 +177,17 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
                 captureView: wc.captureView!,
                 screenRecorder: recorder,
                 control: control,
+                keyHelper: keyHelper,
                 screenWidth: options.screenWidth,
-                screenHeight: options.screenHeight
+                screenHeight: options.screenHeight,
+                showWindow: { [weak wc] in
+                    wc?.showExistingWindow()
+                }
             )
             hostControl = hc
 
             // Wire location toggle through onConnect/onDisconnect
-            control.onConnect = { [weak mc, weak provider = locationProvider] caps in
+            control.onConnect = { [weak mc, weak wc, weak provider = locationProvider] caps in
                 mc?.updateConnectAvailability(available: true)
                 mc?.updateInstallAvailability(available: caps.contains("ipa_install"))
                 mc?.updateAppsAvailability(available: caps.contains("apps"))
@@ -171,11 +205,14 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
                 }
                 mc?.syncBatteryFromHost()
                 mc?.syncLowPowerModeFromHost()
+                wc?.updateToolbarAvailability(
+                    connected: true, canInstallPackage: caps.contains("ipa_install")
+                )
                 Task { @MainActor [weak self] in
                     await self?.installPackageIfRequested(caps: caps)
                 }
             }
-            control.onDisconnect = { [weak mc, weak provider = locationProvider] in
+            control.onDisconnect = { [weak mc, weak wc, weak provider = locationProvider] in
                 mc?.updateConnectAvailability(available: false)
                 mc?.updateInstallAvailability(available: false)
                 mc?.updateAppsAvailability(available: false)
@@ -185,6 +222,7 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
                 provider?.stopReplay()
                 provider?.stopForwarding()
                 mc?.updateLocationCapability(available: false)
+                wc?.updateToolbarAvailability(connected: false, canInstallPackage: false)
             }
         } else if !cli.dfu {
             // Headless mode: auto-start location as before (no menu exists)
@@ -246,6 +284,9 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
-        !cli.noGraphics
+        // Closing the VM GUI window should only hide the GUI and keep the
+        // virtual phone alive for background automation/multi-instance use.
+        // Real shutdown is handled by scripts/stop_vphone_instance.sh or Cmd-Q.
+        false
     }
 }

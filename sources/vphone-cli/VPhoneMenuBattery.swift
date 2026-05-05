@@ -5,11 +5,11 @@ import IOKit.ps
 
 extension VPhoneMenuController {
     func buildBatterySubmenu() -> NSMenuItem {
-        let item = NSMenuItem(title: "Battery", action: nil, keyEquivalent: "")
-        let menu = NSMenu(title: "Battery")
+        let item = NSMenuItem(title: VPhoneMenuText.Battery.menu, action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: VPhoneMenuText.Battery.menu)
 
         // Sync toggle
-        let syncItem = makeItem("Sync with Host", action: #selector(toggleBatterySync(_:)))
+        let syncItem = makeItem(VPhoneMenuText.Battery.syncHost, action: #selector(toggleBatterySync(_:)))
         syncItem.state = .off
         menu.addItem(syncItem)
 
@@ -35,10 +35,12 @@ extension VPhoneMenuController {
         menu.addItem(NSMenuItem.separator())
 
         // Connectivity: 1=charging, 2=disconnected
-        let charging = makeItem("Charging", action: #selector(setBatteryConnectivity(_:)))
+        let charging = makeItem(VPhoneMenuText.Battery.charging, action: #selector(setBatteryConnectivity(_:)))
         charging.tag = 1
         charging.state = .on
-        let disconnected = makeItem("Disconnected", action: #selector(setBatteryConnectivity(_:)))
+        let disconnected = makeItem(
+            VPhoneMenuText.Battery.disconnected, action: #selector(setBatteryConnectivity(_:))
+        )
         disconnected.tag = 2
 
         menu.addItem(charging)

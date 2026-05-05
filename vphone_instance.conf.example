@@ -1,0 +1,81 @@
+# vphone local instance config
+#
+# Copy this file to vphone_instance.conf and edit it. The real
+# vphone_instance.conf is ignored by git and is read by:
+#   - launch_trollstore_vphone.command
+#   - create_trollstore_instance.command
+#
+# Units:
+#   CPU       = virtual CPU cores
+#   MEMORY_GB = GB (scripts convert to Makefile MEMORY in MB)
+#   DISK_SIZE = GB
+
+# Default single/multi-instance VM size used during creation.
+# Firmware variant: regular / dev / jb
+VPHONE_VARIANT=jb
+CPU=4
+MEMORY_GB=4
+DISK_SIZE=32
+
+# Number of new instances to create in one create_trollstore_instance.command run.
+# Creation is batched safely/serially; generated instances can be launched after creation.
+VPHONE_CREATE_COUNT=1
+
+# Number of clones to create from a stopped clean base VM when running
+# clone_vphone_instance.command / scripts/clone_vphone_instance.sh.
+VPHONE_CLONE_COUNT=1
+# VPHONE_CLONE_SOURCE="/Users/true/Documents/vphone-cli/vm.instances/trollstore-clean-base"
+# VPHONE_CLONE_NAME=phone
+
+# 1 = automatically launch created GUI instance(s) after creation.
+# 0 = only create VM directories and launch_gui.command files.
+VPHONE_AUTO_LAUNCH_CREATED=1
+VPHONE_AUTO_LAUNCH_CLONED=1
+
+# Skip setup_machine's optional final boot-analysis pass after restore/CFW.
+# The one-click creation scripts default to 1; normal GUI launch happens next.
+SKIP_BOOT_ANALYSIS=1
+
+# Ask these values in Terminal every time the one-click creation scripts run.
+# Set to 0 for unattended/non-interactive automation.
+VPHONE_INTERACTIVE_CONFIG=1
+
+# Optional sudo password preload.
+# Leave commented for the recommended behavior: the .command script asks once
+# in Terminal and reuses it during this run. Setting this makes creation fully
+# non-interactive, but stores your macOS password in plaintext.
+# Prefer putting this in .env instead of vphone_instance.conf:
+#   cp .env.example .env && chmod 600 .env
+# VPHONE_SUDO_PASSWORD="your-macOS-admin-password"
+
+# Optional guest language/region. Applied after SSH is reachable.
+# Leave them commented/empty to keep the system default.
+# Common examples:
+#   VPHONE_LANGUAGE=zh-Hans  VPHONE_LOCALE=zh_CN
+#   VPHONE_LANGUAGE=en       VPHONE_LOCALE=en_US
+#   VPHONE_LANGUAGE=ja       VPHONE_LOCALE=ja_JP
+# VPHONE_LANGUAGE=zh-Hans
+# VPHONE_LOCALE=zh_CN
+
+# Restart SpringBoard after applying language preferences.
+# Set to 0 if you prefer to reboot/respring manually later.
+VPHONE_LANGUAGE_RESPRING=1
+
+# Optional VM network mode:
+#   nat     = default shared host network
+#   bridged = bridge to a host interface such as en0
+#   none    = no virtual network card / offline
+VPHONE_NETWORK_MODE=nat
+# VPHONE_NETWORK_INTERFACE=en0
+
+# Optional multi-instance base directory.
+# VPHONE_INSTANCES_DIR="/Users/true/Documents/vphone-cli/vm.instances"
+
+# Optional fixed ports for launch_trollstore_vphone.command only.
+# Multi-instance launch_gui.command normally auto-increments if ports are busy.
+# VPHONE_SSH_PORT=2222
+# VPHONE_VNC_PORT=5901
+# VPHONE_RPC_PORT=5910
+
+# Optional: auto-open macOS Screen Sharing for VNC after boot.
+# OPEN_VNC=1

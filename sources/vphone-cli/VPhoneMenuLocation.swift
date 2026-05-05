@@ -50,10 +50,10 @@ private let locationReplayPoints: [VPhoneLocationProvider.ReplayPoint] = [
 
 extension VPhoneMenuController {
     func buildLocationSubmenu() -> NSMenuItem {
-        let item = NSMenuItem(title: "Location", action: nil, keyEquivalent: "")
-        let menu = NSMenu(title: "Location")
+        let item = NSMenuItem(title: VPhoneMenuText.Location.menu, action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: VPhoneMenuText.Location.menu)
 
-        let toggle = makeItem("Sync Host Location", action: #selector(toggleLocationSync))
+        let toggle = makeItem(VPhoneMenuText.Location.syncHost, action: #selector(toggleLocationSync))
         toggle.state = .off
         toggle.isEnabled = false
         locationMenuItem = toggle
@@ -61,8 +61,8 @@ extension VPhoneMenuController {
 
         menu.addItem(NSMenuItem.separator())
 
-        let presets = NSMenuItem(title: "Preset Location", action: nil, keyEquivalent: "")
-        let presetsMenu = NSMenu(title: "Preset Location")
+        let presets = NSMenuItem(title: VPhoneMenuText.Location.preset, action: nil, keyEquivalent: "")
+        let presetsMenu = NSMenu(title: VPhoneMenuText.Location.preset)
         for (index, preset) in locationPresets.enumerated() {
             let presetItem = makeItem(preset.title, action: #selector(setLocationPreset(_:)))
             presetItem.tag = index
@@ -75,12 +75,16 @@ extension VPhoneMenuController {
 
         menu.addItem(NSMenuItem.separator())
 
-        let replayStart = makeItem("Start Route Replay", action: #selector(startLocationReplay(_:)))
+        let replayStart = makeItem(
+            VPhoneMenuText.Location.startReplay, action: #selector(startLocationReplay(_:))
+        )
         replayStart.isEnabled = false
         locationReplayStartItem = replayStart
         menu.addItem(replayStart)
 
-        let replayStop = makeItem("Stop Route Replay", action: #selector(stopLocationReplay(_:)))
+        let replayStop = makeItem(
+            VPhoneMenuText.Location.stopReplay, action: #selector(stopLocationReplay(_:))
+        )
         replayStop.isEnabled = false
         locationReplayStopItem = replayStop
         menu.addItem(replayStop)

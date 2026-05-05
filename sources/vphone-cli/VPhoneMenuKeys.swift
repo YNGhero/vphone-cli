@@ -6,17 +6,19 @@ import LocalAuthentication
 extension VPhoneMenuController {
     func buildKeysMenu() -> NSMenuItem {
         let item = NSMenuItem()
-        let menu = NSMenu(title: "Keys")
-        menu.addItem(makeItem("Home Screen", action: #selector(sendHome)))
-        menu.addItem(makeItem("Power", action: #selector(sendPower)))
-        menu.addItem(makeItem("Volume Up", action: #selector(sendVolumeUp)))
-        menu.addItem(makeItem("Volume Down", action: #selector(sendVolumeDown)))
+        let menu = NSMenu(title: VPhoneMenuText.Keys.menu)
+        menu.addItem(makeItem(VPhoneMenuText.Keys.home, action: #selector(sendHome)))
+        menu.addItem(makeItem(VPhoneMenuText.Keys.power, action: #selector(sendPower)))
+        menu.addItem(makeItem(VPhoneMenuText.Keys.volumeUp, action: #selector(sendVolumeUp)))
+        menu.addItem(makeItem(VPhoneMenuText.Keys.volumeDown, action: #selector(sendVolumeDown)))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(makeItem("Spotlight (Cmd+Space)", action: #selector(sendSpotlight)))
+        menu.addItem(makeItem(VPhoneMenuText.Keys.spotlight, action: #selector(sendSpotlight)))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(makeItem("Type ASCII from Clipboard", action: #selector(typeFromClipboard)))
+        menu.addItem(makeItem(VPhoneMenuText.Keys.typeASCII, action: #selector(typeFromClipboard)))
         menu.addItem(NSMenuItem.separator())
-        let tidItem = makeItem("Touch ID Home Forwarding", action: #selector(toggleTouchIDForwarding))
+        let tidItem = makeItem(
+            VPhoneMenuText.Keys.touchIDForwarding, action: #selector(toggleTouchIDForwarding)
+        )
         if hasTouchID {
             let tidEnabled = !UserDefaults.standard.bool(forKey: "touchIDForwardingDisabled")
             tidItem.state = tidEnabled ? .on : .off
