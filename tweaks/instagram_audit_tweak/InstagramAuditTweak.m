@@ -5,6 +5,7 @@
 #import <dlfcn.h>
 #import <fcntl.h>
 #import <unistd.h>
+#import <sys/utsname.h>
 
 static NSString *const VPStatePath = @"/tmp/instagram_account.json";
 static NSString *VPBundleID;
@@ -13,11 +14,86 @@ static NSMutableDictionary<NSString *, NSMutableDictionary *> *VPRequestState;
 static NSMutableDictionary<NSString *, NSString *> *VPLatestFieldState;
 static NSLock *VPLogLock;
 static NSISO8601DateFormatter *VPDateFormatter;
+static NSDictionary *VPProfile;
+static BOOL VPProfileLoaded;
 
 typedef void (*MSHookFunctionType)(void *symbol, void *replace, void **result);
 
 static void VPEmitEvent(NSString *type, NSDictionary *payload);
 static void VPEmitFieldSnapshot(NSString *source, NSDictionary<NSString *, NSString *> *fields, NSDictionary *extra);
+
+static NSDictionary *VPLoadProfile(void) {
+    if (VPProfileLoaded) return VPProfile;
+    VPProfileLoaded = YES;
+    NSString *bundle = VPBundleID.length ? VPBundleID : (NSBundle.mainBundle.bundleIdentifier ?: @"");
+    if (!bundle.length) return nil;
+    NSString *name = [bundle stringByAppendingPathExtension:@"json"];
+    for (NSString *root in @[ @"/var/mobile/vphone_app_profiles", @"/private/var/mobile/vphone_app_profiles" ]) {
+        NSString *path = [root stringByAppendingPathComponent:name];
+        NSData *data = [NSData dataWithContentsOfFile:path];
+        if (!data.length) continue;
+        id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if (![obj isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *profile = (NSDictionary *)obj;
+        NSString *profileBundle = [profile[@"bundle_id"] isKindOfClass:NSString.class] ? profile[@"bundle_id"] : @"";
+        if (profileBundle.length && ![profileBundle isEqualToString:bundle]) continue;
+        id enabled = profile[@"enabled"];
+        if ([enabled respondsToSelector:@selector(boolValue)] && ![enabled boolValue]) return nil;
+        VPProfile = profile;
+        return VPProfile;
+    }
+    return nil;
+}
+
+static NSString *VPProfileString(NSString *key) {
+    id value = VPLoadProfile()[key];
+    if ([value isKindOfClass:NSString.class] && [(NSString *)value length] > 0) return value;
+    if ([value respondsToSelector:@selector(stringValue)]) {
+        NSString *s = [value stringValue];
+        if (s.length) return s;
+    }
+    return nil;
+}
+
+static BOOL VPProfileBool(NSString *key, BOOL defaultValue) {
+    id value = VPLoadProfile()[key];
+    return [value respondsToSelector:@selector(boolValue)] ? [value boolValue] : defaultValue;
+}
+
+static NSString *VPCurrentMachine(void) {
+    struct utsname name;
+    if (uname(&name) == 0 && name.machine[0]) return [NSString stringWithUTF8String:name.machine];
+    return nil;
+}
+
+static NSString *VPProfileProductType(void) {
+    return VPProfileString(@"productType") ?: VPProfileString(@"hardwareMachine");
+}
+
+static NSString *VPNormalizeUserAgentForProfile(NSString *input) {
+    if (![input isKindOfClass:NSString.class] || input.length == 0) return input;
+    if (!VPProfileBool(@"spoofProductType", YES)) return input;
+    NSString *productType = VPProfileProductType();
+    if (!productType.length) return input;
+
+    NSString *out = input;
+    NSArray<NSString *> *needles = @[
+        VPProfileString(@"sourceProductType") ?: VPCurrentMachine() ?: @"",
+        @"iPhone99,11"
+    ];
+    for (NSString *needle in needles) {
+        if (!needle.length || [needle isEqualToString:productType]) continue;
+        out = [out stringByReplacingOccurrencesOfString:needle withString:productType];
+    }
+    if (![out isEqualToString:input]) return out;
+    if ([out rangeOfString:@"Instagram"].location == NSNotFound) return input;
+    if ([out rangeOfString:productType].location != NSNotFound) return out;
+
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"iPhone[0-9]{2,3},[0-9]+"
+                                                                           options:0
+                                                                             error:nil];
+    return [regex stringByReplacingMatchesInString:out options:0 range:NSMakeRange(0, out.length) withTemplate:productType];
+}
 
 static NSString *VPNowISO8601(void) {
     static dispatch_once_t onceToken;
@@ -437,6 +513,10 @@ static void VPEmitFieldSnapshot(NSString *source, NSDictionary<NSString *, NSStr
     NSString *authorization = fields[@"authorization"];
     NSDictionary *derived = VPDerivedFieldsFromAuthorization(authorization);
     if (derived.count) [merged addEntriesFromDictionary:derived];
+    NSString *userAgent = merged[@"user_agent"];
+    if ([userAgent isKindOfClass:NSString.class] && userAgent.length > 0) {
+        merged[@"user_agent"] = VPNormalizeUserAgentForProfile(userAgent);
+    }
     VPUpdateLatestFieldState(merged);
     VPWriteAccountStateFile();
 }

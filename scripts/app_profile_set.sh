@@ -21,8 +21,8 @@ Options:
   --wifi <mac>             MobileGestalt WiFiAddress
   --bluetooth <mac>        MobileGestalt BluetoothAddress
   --product-type <value>   MobileGestalt ProductType, e.g. iPhone17,3
-  --spoof-product-type     Spoof hw.machine/uname and MG ProductType (default)
-  --no-spoof-product-type  Do not spoof low-level product identifier
+  --spoof-product-type     Rewrite app UA/request ProductType to profile value (default)
+  --no-spoof-product-type  Do not rewrite app UA/request ProductType
   --model <value>          UIDevice model/localizedModel, default iPhone
   --system-version <ver>   UIDevice.systemVersion / MG ProductVersion
   --build-version <ver>    MG BuildVersion

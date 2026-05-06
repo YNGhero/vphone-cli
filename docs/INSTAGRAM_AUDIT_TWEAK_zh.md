@@ -1,6 +1,6 @@
 # InstagramAuditTweak：抓取 Instagram Cookie / UA / 设备信息（JSONL）
 
-`InstagramAuditTweak` 是一个 rootless iOS tweak，用于在 **不修改任何值** 的前提下，审计 Instagram App 运行时：
+`InstagramAuditTweak` 是一个 rootless iOS tweak，用于在 **不修改 App 请求** 的前提下，审计 Instagram App 运行时：
 
 - 请求 URL / Method
 - 请求头（含 `User-Agent`、`Cookie`、`Authorization`、`X-IG-*`、`IG-U-*`、`X-MID`）
@@ -9,6 +9,8 @@
 
 输出格式为：**单个 JSON 文件**。  
 每抓到一个字段，就把字段写回同一个账号 JSON，不再追加事件流。
+
+如果同一 bundle 存在 `/var/mobile/vphone_app_profiles/<bundle-id>.json`，且 `spoofProductType=true`，账号 JSON 里的 `user_agent` 会按 profile 的 `productType` 做同样的显示归一化，避免与 `VPhoneProfileTweak` 的外层 UA 改写顺序不一致。
 
 文件在 guest 内：
 

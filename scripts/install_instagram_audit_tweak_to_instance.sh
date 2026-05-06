@@ -19,7 +19,7 @@ Examples:
 Notes:
   - Default bundle is com.burbn.instagram.
   - Output JSON is /tmp/instagram_account.json inside the guest.
-  - This tweak is audit-only: it fills a single account JSON with whatever fields are captured, and does not modify values.
+  - This tweak is audit-only: it fills a single account JSON and does not modify app requests.
 USAGE
 }
 

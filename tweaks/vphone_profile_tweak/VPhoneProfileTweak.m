@@ -18,6 +18,8 @@ static BOOL VPAuditReads;
 static BOOL VPAuditMobileGestalt;
 static BOOL VPSpoofMobileGestalt;
 static BOOL VPSpoofProductType;
+static BOOL VPSpoofProductTypeMobileGestalt;
+static NSString *VPSourceProductType;
 static NSMutableSet<NSString *> *VPLoggedReads;
 
 static void VPLog(NSString *format, ...) {
@@ -259,6 +261,60 @@ static NSString *VPProductType(void) {
     return VPString(@"productType") ?: VPString(@"hardwareMachine");
 }
 
+static NSString *VPCurrentMachine(void) {
+    struct utsname name;
+    if (uname(&name) == 0 && name.machine[0]) {
+        return [NSString stringWithUTF8String:name.machine];
+    }
+    return nil;
+}
+
+static NSString *VPRewriteUserAgentString(NSString *input) {
+    if (![input isKindOfClass:NSString.class] || input.length == 0) return input;
+    NSString *productType = VPProductType();
+    if (!productType.length) return input;
+
+    NSString *out = input;
+    NSArray<NSString *> *needles = @[
+        VPString(@"sourceProductType") ?: VPSourceProductType ?: @"",
+        @"iPhone99,11"
+    ];
+    for (NSString *needle in needles) {
+        if (!needle.length || [needle isEqualToString:productType]) continue;
+        out = [out stringByReplacingOccurrencesOfString:needle withString:productType];
+    }
+
+    if (![out isEqualToString:input]) return out;
+    if ([out rangeOfString:@"Instagram"].location == NSNotFound) return input;
+    if ([out rangeOfString:productType].location != NSNotFound) return out;
+
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"iPhone[0-9]{2,3},[0-9]+"
+                                                                           options:0
+                                                                             error:nil];
+    return [regex stringByReplacingMatchesInString:out
+                                           options:0
+                                             range:NSMakeRange(0, out.length)
+                                      withTemplate:productType];
+}
+
+static NSDictionary *VPRewriteHeadersDictionary(NSDictionary *headers) {
+    if (![headers isKindOfClass:NSDictionary.class]) return headers;
+    NSMutableDictionary *mutable = nil;
+    for (id key in headers) {
+        if (![key isKindOfClass:NSString.class]) continue;
+        NSString *lower = [(NSString *)key lowercaseString];
+        if (![lower isEqualToString:@"user-agent"]) continue;
+        id value = headers[key];
+        if (![value isKindOfClass:NSString.class]) continue;
+        NSString *rewritten = VPRewriteUserAgentString((NSString *)value);
+        if (![rewritten isEqualToString:value]) {
+            if (!mutable) mutable = [headers mutableCopy];
+            mutable[key] = rewritten;
+        }
+    }
+    return mutable ?: headers;
+}
+
 static BOOL VPIsProductGestaltKey(NSString *key) {
     if (!key.length) return NO;
     return [key isEqualToString:@"ProductType"] ||
@@ -315,7 +371,7 @@ static CFTypeRef rep_MGCopyAnswer(CFStringRef key) {
     if (VPAuditMobileGestalt) {
         VPLogReadOnce([NSString stringWithFormat:@"MGCopyAnswer:%@", keyString]);
     }
-    if (VPSpoofMobileGestalt || VPSpoofProductType) {
+    if (VPSpoofMobileGestalt || VPSpoofProductTypeMobileGestalt) {
         CFTypeRef value = VPCopyGestaltValue(key, !VPSpoofMobileGestalt);
         if (value) return value;
     }
@@ -400,6 +456,79 @@ static void VPHookInstanceMethod(Class cls, SEL sel, IMP replacement, IMP *orig)
 static void VPHookClassMethod(Class cls, SEL sel, IMP replacement, IMP *orig) {
     if (!cls) return;
     VPHookInstanceMethod(object_getClass(cls), sel, replacement, orig);
+}
+
+static id (*orig_IGUserAgent_commonHeaders)(id, SEL);
+static id rep_IGUserAgent_commonHeaders(id self, SEL _cmd) {
+    id result = orig_IGUserAgent_commonHeaders ? orig_IGUserAgent_commonHeaders(self, _cmd) : nil;
+    return [result isKindOfClass:NSDictionary.class] ? VPRewriteHeadersDictionary(result) : result;
+}
+
+static id (*orig_IGUserAgent_APIRequestString)(id, SEL);
+static id rep_IGUserAgent_APIRequestString(id self, SEL _cmd) {
+    id result = orig_IGUserAgent_APIRequestString ? orig_IGUserAgent_APIRequestString(self, _cmd) : nil;
+    return [result isKindOfClass:NSString.class] ? VPRewriteUserAgentString(result) : result;
+}
+
+static id (*orig_IGUserAgent_staticAPIRequestString)(id, SEL);
+static id rep_IGUserAgent_staticAPIRequestString(id self, SEL _cmd) {
+    id result = orig_IGUserAgent_staticAPIRequestString ? orig_IGUserAgent_staticAPIRequestString(self, _cmd) : nil;
+    return [result isKindOfClass:NSString.class] ? VPRewriteUserAgentString(result) : result;
+}
+
+static void (*orig_MutableURLRequest_setValueForHTTPHeaderField)(id, SEL, id, id);
+static void rep_MutableURLRequest_setValueForHTTPHeaderField(id self, SEL _cmd, id value, id field) {
+    if ([field isKindOfClass:NSString.class] &&
+        [[(NSString *)field lowercaseString] isEqualToString:@"user-agent"] &&
+        [value isKindOfClass:NSString.class]) {
+        value = VPRewriteUserAgentString((NSString *)value);
+    }
+    if (orig_MutableURLRequest_setValueForHTTPHeaderField) orig_MutableURLRequest_setValueForHTTPHeaderField(self, _cmd, value, field);
+}
+
+static void (*orig_MutableURLRequest_addValueForHTTPHeaderField)(id, SEL, id, id);
+static void rep_MutableURLRequest_addValueForHTTPHeaderField(id self, SEL _cmd, id value, id field) {
+    if ([field isKindOfClass:NSString.class] &&
+        [[(NSString *)field lowercaseString] isEqualToString:@"user-agent"] &&
+        [value isKindOfClass:NSString.class]) {
+        value = VPRewriteUserAgentString((NSString *)value);
+    }
+    if (orig_MutableURLRequest_addValueForHTTPHeaderField) orig_MutableURLRequest_addValueForHTTPHeaderField(self, _cmd, value, field);
+}
+
+static void (*orig_NSURLSessionConfiguration_setHTTPAdditionalHeaders)(id, SEL, id);
+static void rep_NSURLSessionConfiguration_setHTTPAdditionalHeaders(id self, SEL _cmd, id headers) {
+    if ([headers isKindOfClass:NSDictionary.class]) {
+        headers = VPRewriteHeadersDictionary((NSDictionary *)headers);
+    }
+    if (orig_NSURLSessionConfiguration_setHTTPAdditionalHeaders) orig_NSURLSessionConfiguration_setHTTPAdditionalHeaders(self, _cmd, headers);
+}
+
+static Class VPResolveClass(NSArray<NSString *> *names) {
+    for (NSString *name in names) {
+        Class cls = NSClassFromString(name);
+        if (cls) return cls;
+    }
+    return Nil;
+}
+
+static void VPHookUserAgentSurfaces(void) {
+    Class IGUserAgentClass = VPResolveClass(@[
+        @"IGUserAgent",
+        @"_TtC11IGUserAgent11IGUserAgent"
+    ]);
+    VPHookInstanceMethod(IGUserAgentClass, @selector(commonHeaders), (IMP)rep_IGUserAgent_commonHeaders, (IMP *)&orig_IGUserAgent_commonHeaders);
+    VPHookInstanceMethod(IGUserAgentClass, @selector(APIRequestString), (IMP)rep_IGUserAgent_APIRequestString, (IMP *)&orig_IGUserAgent_APIRequestString);
+    VPHookClassMethod(IGUserAgentClass, @selector(staticAPIRequestString), (IMP)rep_IGUserAgent_staticAPIRequestString, (IMP *)&orig_IGUserAgent_staticAPIRequestString);
+
+    Class MutableURLRequestClass = NSMutableURLRequest.class;
+    VPHookInstanceMethod(MutableURLRequestClass, @selector(setValue:forHTTPHeaderField:), (IMP)rep_MutableURLRequest_setValueForHTTPHeaderField, (IMP *)&orig_MutableURLRequest_setValueForHTTPHeaderField);
+    VPHookInstanceMethod(MutableURLRequestClass, @selector(addValue:forHTTPHeaderField:), (IMP)rep_MutableURLRequest_addValueForHTTPHeaderField, (IMP *)&orig_MutableURLRequest_addValueForHTTPHeaderField);
+
+    Class URLSessionConfigurationClass = NSURLSessionConfiguration.class;
+    VPHookInstanceMethod(URLSessionConfigurationClass, @selector(setHTTPAdditionalHeaders:), (IMP)rep_NSURLSessionConfiguration_setHTTPAdditionalHeaders, (IMP *)&orig_NSURLSessionConfiguration_setHTTPAdditionalHeaders);
+
+    VPLog(@"user-agent product rewrite enabled source=%@ target=%@ igClass=%@", VPSourceProductType, VPProductType(), IGUserAgentClass ? NSStringFromClass(IGUserAgentClass) : @"<missing>");
 }
 
 static void VPHookObjectiveC(void) {
@@ -505,14 +634,19 @@ static void VPhoneProfileTweakInit(void) {
         VPAuditReads = VPBool(@"auditReads", NO);
         VPAuditMobileGestalt = VPBool(@"auditMobileGestalt", NO);
         VPSpoofMobileGestalt = VPBool(@"hookMobileGestalt", NO);
+        VPSpoofProductTypeMobileGestalt = VPBool(@"hookProductTypeMobileGestalt", NO);
         VPSpoofProductType = VPBool(@"spoofProductType", YES) && VPProductType().length > 0;
+        VPSourceProductType = VPString(@"sourceProductType") ?: VPCurrentMachine();
         VPHookObjectiveC();
         if (VPSpoofProductType) {
+            VPHookUserAgentSurfaces();
+        }
+        if (VPBool(@"hookHardwareIdentity", NO)) {
             VPHookHardwareIdentity();
         }
-        if (VPSpoofMobileGestalt || VPAuditMobileGestalt || VPSpoofProductType) {
+        if (VPSpoofMobileGestalt || VPAuditMobileGestalt || VPSpoofProductTypeMobileGestalt) {
             VPHookMobileGestalt();
         }
-        VPLog(@"enabled bundle=%@ profile=%@ auditReads=%d auditMobileGestalt=%d hookMobileGestalt=%d spoofProductType=%d productType=%@", VPBundleID, VPProfilePath, VPAuditReads, VPAuditMobileGestalt, VPSpoofMobileGestalt, VPSpoofProductType, VPProductType());
+        VPLog(@"enabled bundle=%@ profile=%@ auditReads=%d auditMobileGestalt=%d hookMobileGestalt=%d spoofProductType=%d hookProductTypeMobileGestalt=%d productType=%@ sourceProductType=%@", VPBundleID, VPProfilePath, VPAuditReads, VPAuditMobileGestalt, VPSpoofMobileGestalt, VPSpoofProductType, VPSpoofProductTypeMobileGestalt, VPProductType(), VPSourceProductType);
     }
 }
