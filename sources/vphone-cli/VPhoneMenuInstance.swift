@@ -672,12 +672,12 @@ extension VPhoneMenuController {
     private func promptProxyURL() -> String? {
         let alert = NSAlert()
         alert.messageText = "设置实例代理"
-        alert.informativeText = "输入当前实例要使用的 HTTP/SOCKS5 代理 URL。该配置写入 guest SystemConfiguration，适用于遵循系统代理的 App。"
+        alert.informativeText = "输入当前实例要使用的 HTTP/SOCKS5 代理 URL。省略协议时默认 http://；SOCKS5 和带认证的 HTTP 代理会自动补兼容层。"
         alert.addButton(withTitle: "设置并测试")
         alert.addButton(withTitle: "取消")
 
         let field = NSTextField(string: defaultProxyURL())
-        field.placeholderString = "例如 socks5://user:pass@1.2.3.4:1080"
+        field.placeholderString = "例如 user:pass@1.2.3.4:8080 或 socks5://1.2.3.4:1080"
         field.frame = NSRect(x: 0, y: 0, width: 460, height: 26)
         alert.accessoryView = field
 

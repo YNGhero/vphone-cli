@@ -150,7 +150,7 @@ networkConfig.macAddress = 02:xx:xx:xx:xx:xx
 
 克隆实例时会重新生成 MAC；老实例如果该字段为空，首次用新版 GUI 启动时会自动补写。
 
-> **注意：** 网络模式决定虚拟网卡接入方式，不等同于“不同公网 IP/不同地区代理”。如果需要按实例分配代理或出口 IP，可以先使用第一阶段的 guest 系统代理脚本，见 `docs/NETWORK_PROXY_AUTOMATION_zh.md`。
+> **注意：** 网络模式决定虚拟网卡接入方式，不等同于“不同公网 IP/不同地区代理”。如果需要按实例分配代理或出口 IP，可以使用 guest 系统代理脚本（含 SOCKS5 -> HTTP/HTTPS 兼容层），见 `docs/NETWORK_PROXY_AUTOMATION_zh.md`。
 
 ## 恢复过程
 
@@ -733,7 +733,7 @@ Proxy: socks5://host:1080
 
 - `machineIdentifier` 在新 VM 第一次启动时生成并写入 `config.plist`，因此每个实例会获得独立 ECID/UDID。
 - `networkConfig.mode` 和 `networkConfig.macAddress` 保存在每个实例自己的 `config.plist` 中；`nat` 为默认，`bridged` 需要指定可桥接网卡，`none` 为离线。
-- `scripts/set_instance_proxy.sh` 可给已启动实例写入 HTTP/SOCKS5 系统代理，并把 `VPHONE_PROXY_*` 写回该实例的 `instance.env`；多开管理器右键菜单也已接入“设置代理/清除代理/测试出口 IP”。
+- `scripts/set_instance_proxy.sh` 可给已启动实例写入 HTTP/SOCKS5 系统代理；代理 URL 省略协议时默认 `http://`，SOCKS5 会自动补 HTTP/HTTPS 兼容层，带账号密码的 HTTP 代理会自动通过 host bridge 隐藏认证，并把 `VPHONE_PROXY_*` 写回该实例的 `instance.env`；多开管理器右键菜单也已接入“设置代理/清除代理/测试出口 IP”。
 - 语言设置写入 guest 的 `/var/mobile/Library/Preferences/.GlobalPreferences.plist` 和 `/var/root/Library/Preferences/.GlobalPreferences.plist`，并记录 marker，避免每次启动重复重启 SpringBoard。
 - 多开实例存放在 `vm.instances/`，该目录已加入 `.gitignore`，不会进入版本控制。
 - 创建流程使用 `.multi_create_trollstore.lock` 防止同时执行多个“刷机/创建”流程；**创建新实例请串行执行**。
