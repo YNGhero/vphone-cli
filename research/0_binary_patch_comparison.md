@@ -244,6 +244,8 @@
 - 2026-05-06: added `InstagramAuditTweak`, a **host/user-space app audit tweak** for `com.burbn.instagram`.
   - Scope: request headers (`User-Agent`, `Cookie`, `Authorization`, `X-IG-*`, `IG-U-*`, `X-MID`), cookie storage events, and device-read APIs (`UIDevice`, `IDFA`, `IDFV`, `Locale`, `TimeZone`, `MGCopyAnswer`).
   - Output: guest-side single account JSON at `/tmp/instagram_account.json` (latest captured fields merged in place).
+  - Helper script `install_instagram_audit_tweak_to_instance.sh` now accepts instance name / VM directory / SSH port and resolves the current SSH port from `vm.instances/*/instance.env`.
+  - Supporting automation scripts now also accept instance name / VM directory instead of requiring manual SSH ports: `import_photo_to_instance.sh`, `install_profile_tweak_to_instance.sh`, `app_profile_set.sh`, `app_backup.sh`, `app_new_device.sh`, `app_restore.sh`, `delete_all_photos_from_instance.sh`.
   - This change does **not** alter any boot-chain / kernel / CFW patch counts in the tables above.
     - it can attach to `/usr/libexec/amfid`
     - the initial path allow rule failed because `AMFIPathValidator` reports URL-encoded paths (`/Volumes/My%20Shared%20Files/...`)

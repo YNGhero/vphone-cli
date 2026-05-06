@@ -4,15 +4,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PATH="${PROJECT_ROOT}/.tools/shims:${PROJECT_ROOT}/.tools/bin:${PROJECT_ROOT}/.venv/bin:${HOME}/Library/Python/3.9/bin:${HOME}/Library/Python/3.14/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+source "${PROJECT_ROOT}/scripts/vphone_app_state_common.sh"
 
 usage() {
   cat <<'USAGE'
 Usage:
-  zsh scripts/import_photo_to_instance.sh IMAGE_PATH [SSH_PORT] [ALBUM]
+  zsh scripts/import_photo_to_instance.sh IMAGE_PATH [实例名|VM目录|SSH端口] [ALBUM]
 
 Defaults:
   SSH_PORT: ${SSH_LOCAL_PORT:-2224}
   ALBUM:    ${VPHONE_PHOTO_ALBUM:-VPhoneImports}
+
+Examples:
+  zsh scripts/import_photo_to_instance.sh ./a.jpg instagram-01
+  zsh scripts/import_photo_to_instance.sh ./a.jpg vm.instances/instagram-01
+  zsh scripts/import_photo_to_instance.sh ./a.jpg 2224
 USAGE
 }
 
@@ -20,8 +26,16 @@ USAGE
 [[ $# -ge 1 ]] || { usage >&2; exit 2; }
 
 IMAGE_PATH="$1"
-SSH_PORT="${2:-${SSH_LOCAL_PORT:-2224}}"
+TARGET="${2:-${SSH_LOCAL_PORT:-2224}}"
 ALBUM="${3:-${VPHONE_PHOTO_ALBUM:-VPhoneImports}}"
+
+if [[ "$TARGET" == <-> ]]; then
+  SSH_PORT="$TARGET"
+elif vpa_resolve_vm_dir "$TARGET" >/dev/null 2>&1; then
+  SSH_PORT="$(vpa_resolve_ssh_port "$TARGET")"
+else
+  SSH_PORT="$TARGET"
+fi
 
 [[ -f "$IMAGE_PATH" ]] || { echo "[-] image not found: $IMAGE_PATH" >&2; exit 2; }
 [[ "$SSH_PORT" == <-> ]] || { echo "[-] SSH_PORT must be numeric: $SSH_PORT" >&2; exit 2; }

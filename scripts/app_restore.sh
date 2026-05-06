@@ -9,7 +9,7 @@ source "${PROJECT_ROOT}/scripts/vphone_app_state_common.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  zsh scripts/app_restore.sh [SSH_PORT] <bundle-id> <backup.tar.gz> [options]
+  zsh scripts/app_restore.sh [实例名|VM目录|SSH端口] <bundle-id> <backup.tar.gz> [options]
 
 Options:
   --yes          Do not ask for destructive confirmation
@@ -17,6 +17,8 @@ Options:
   --respring     Restart SpringBoard after restore
 
 Examples:
+  zsh scripts/app_restore.sh instagram-01 com.example.app app_backups/com.example.app/20260506-120000-manual.tar.gz --yes
+  zsh scripts/app_restore.sh vm.instances/instagram-01 com.example.app app_backups/com.example.app/20260506-120000-manual.tar.gz --yes
   zsh scripts/app_restore.sh 2224 com.example.app app_backups/com.example.app/20260506-120000-manual.tar.gz --yes
 USAGE
 }
@@ -29,9 +31,14 @@ RELAUNCH=1
 RESPRING=0
 
 args=("$@")
-if (( ${#args[@]} > 0 )) && [[ "${args[1]}" == <-> ]]; then
-  SSH_PORT="${args[1]}"
-  args=("${args[@]:1}")
+if (( ${#args[@]} > 0 )); then
+  if [[ "${args[1]}" == <-> ]]; then
+    SSH_PORT="${args[1]}"
+    args=("${args[@]:1}")
+  elif vpa_resolve_vm_dir "${args[1]}" >/dev/null 2>&1; then
+    SSH_PORT="$(vpa_resolve_ssh_port "${args[1]}")"
+    args=("${args[@]:1}")
+  fi
 fi
 
 while (( ${#args[@]} > 0 )); do

@@ -9,7 +9,7 @@ source "${PROJECT_ROOT}/scripts/vphone_app_state_common.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  zsh scripts/app_profile_set.sh [SSH_PORT] <bundle-id> [options]
+  zsh scripts/app_profile_set.sh [实例名|VM目录|SSH端口] <bundle-id> [options]
 
 Options:
   --from-json <file>       Upload an existing profile JSON
@@ -33,6 +33,8 @@ Options:
   --disabled               Write enabled=false
 
 Examples:
+  zsh scripts/app_profile_set.sh instagram-01 com.burbn.instagram
+  zsh scripts/app_profile_set.sh vm.instances/instagram-01 com.burbn.instagram --audit-reads
   zsh scripts/app_profile_set.sh 2224 com.burbn.instagram
   zsh scripts/app_profile_set.sh 2224 com.burbn.instagram --device-name 'iPhone' --locale en_US --languages en --timezone America/Los_Angeles
   zsh scripts/app_profile_set.sh 2224 com.burbn.instagram --audit-reads
@@ -49,9 +51,14 @@ AUDIT_MOBILEGESTALT=0
 
 typeset -A OPTS
 args=("$@")
-if (( ${#args[@]} > 0 )) && [[ "${args[1]}" == <-> ]]; then
-  SSH_PORT="${args[1]}"
-  args=("${args[@]:1}")
+if (( ${#args[@]} > 0 )); then
+  if [[ "${args[1]}" == <-> ]]; then
+    SSH_PORT="${args[1]}"
+    args=("${args[@]:1}")
+  elif vpa_resolve_vm_dir "${args[1]}" >/dev/null 2>&1; then
+    SSH_PORT="$(vpa_resolve_ssh_port "${args[1]}")"
+    args=("${args[@]:1}")
+  fi
 fi
 
 while (( ${#args[@]} > 0 )); do

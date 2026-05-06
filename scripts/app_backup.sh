@@ -9,13 +9,15 @@ source "${PROJECT_ROOT}/scripts/vphone_app_state_common.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  zsh scripts/app_backup.sh [SSH_PORT] <bundle-id> [backup-name]
-  zsh scripts/app_backup.sh [SSH_PORT] <bundle-id> --output-dir <dir> [backup-name]
+  zsh scripts/app_backup.sh [实例名|VM目录|SSH端口] <bundle-id> [backup-name]
+  zsh scripts/app_backup.sh [实例名|VM目录|SSH端口] <bundle-id> --output-dir <dir> [backup-name]
 
 Options:
   --instance-name <name>  Override the instance name used in archive filename
 
 Examples:
+  zsh scripts/app_backup.sh instagram-01 com.example.app before-login
+  zsh scripts/app_backup.sh vm.instances/instagram-01 com.example.app before-login
   zsh scripts/app_backup.sh 2224 com.example.app before-login
   zsh scripts/app_backup.sh com.example.app clean-state
 
@@ -29,11 +31,19 @@ BUNDLE_ID=""
 BACKUP_NAME="manual"
 OUTPUT_DIR=""
 INSTANCE_NAME=""
+TARGET=""
 
 args=("$@")
-if (( ${#args[@]} > 0 )) && [[ "${args[1]}" == <-> ]]; then
-  SSH_PORT="${args[1]}"
-  args=("${args[@]:1}")
+if (( ${#args[@]} > 0 )); then
+  if [[ "${args[1]}" == <-> ]]; then
+    TARGET="${args[1]}"
+    SSH_PORT="${args[1]}"
+    args=("${args[@]:1}")
+  elif vpa_resolve_vm_dir "${args[1]}" >/dev/null 2>&1; then
+    TARGET="${args[1]}"
+    SSH_PORT="$(vpa_resolve_ssh_port "${args[1]}")"
+    args=("${args[@]:1}")
+  fi
 fi
 
 while (( ${#args[@]} > 0 )); do

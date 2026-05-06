@@ -16,6 +16,26 @@ scripts/app_restore.sh       # 还原指定 App 备份
 root / alpine
 ```
 
+现在这三个脚本也支持直接传 **实例名** 或 **实例目录**，脚本会自动从：
+
+```text
+vm.instances/<实例名>/instance.env
+```
+
+里解析当前 `SSH_LOCAL_PORT`，不必手动记端口。例如：
+
+```bash
+zsh scripts/app_backup.sh instagram-01 com.example.app before-login
+zsh scripts/app_new_device.sh instagram-01 com.example.app --yes
+zsh scripts/app_restore.sh instagram-01 com.example.app app_backups/com.example.app/phone-01-20260506-120000-before-login.tar.gz --yes
+```
+
+也可以传实例目录：
+
+```bash
+zsh scripts/app_backup.sh vm.instances/instagram-01 com.example.app before-login
+```
+
 如密码不是 `alpine`，可以临时指定：
 
 ```bash

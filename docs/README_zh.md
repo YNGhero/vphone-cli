@@ -343,13 +343,13 @@ sshpass -p alpine ssh -p 2222 root@127.0.0.1 'tail -f /var/log/vphone_jb_setup.l
 用法：
 
 ```bash
-zsh scripts/import_photo_to_instance.sh /path/to/image.jpg 2222 VPhoneImports
+zsh scripts/import_photo_to_instance.sh /path/to/image.jpg instagram-01 VPhoneImports
 ```
 
 以当前实例端口 `2224` 为例：
 
 ```bash
-zsh scripts/import_photo_to_instance.sh /Users/true/Documents/ZeusFramework/go/register_ins/picture/0a9b60e54220741bdda743b593b4dd74.jpg 2224 VPhoneImports
+zsh scripts/import_photo_to_instance.sh /Users/true/Documents/ZeusFramework/go/register_ins/picture/0a9b60e54220741bdda743b593b4dd74.jpg instagram-01 VPhoneImports
 ```
 
 成功时会输出类似：
@@ -375,13 +375,13 @@ sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/nul
 交互确认版：
 
 ```bash
-zsh scripts/delete_all_photos_from_instance.sh 2224
+zsh scripts/delete_all_photos_from_instance.sh instagram-01
 ```
 
 免确认版，适合自动化脚本：
 
 ```bash
-zsh scripts/delete_all_photos_from_instance.sh 2224 --yes
+zsh scripts/delete_all_photos_from_instance.sh instagram-01 --yes
 ```
 
 成功时会输出类似：
@@ -883,7 +883,7 @@ vm.instances/<实例名>/launch_gui.command
 
 本地 GUI 菜单中文化、toolbar 快捷按钮、多开管理器、`vphone.sock` 自动化扩展的设计和任务拆分，见 [GUI 二开设计与任务拆分](./GUI_SECONDARY_DEVELOPMENT_zh.md)。
 
-如果要对 Instagram 做 **只抓不改** 的运行时审计，并把已捕获字段持续写入单个账号 JSON（如 `authorization`、`session_id`、`ds_user_id`、`x_ig_device_id` 等），见 [InstagramAuditTweak 使用说明](./INSTAGRAM_AUDIT_TWEAK_zh.md)。
+如果要对 Instagram 做 **只抓不改** 的运行时审计，并把已捕获字段持续写入单个账号 JSON（如 `authorization`、`session_id`、`ds_user_id`、`x_ig_device_id` 等），见 [InstagramAuditTweak 使用说明](./INSTAGRAM_AUDIT_TWEAK_zh.md)。安装脚本现在支持直接传实例名 / 实例目录，不必手动记 SSH 端口。
 
 当前右侧快捷栏包含：安装 IPA、导入图片、粘贴输入ASCII、清空相册、截图、重启、Restart SpringBoard、SSH 信息。
 
@@ -980,13 +980,13 @@ zsh scripts/type_clipboard_ascii_to_instance.sh vm.instances/<实例名> --file 
 `vphone-cli` 自带菜单 `Apps → Install IPA/TIPA...`。如果要从命令行直接传入 IPA 路径和目标实例，可以用：
 
 ```bash
-zsh scripts/install_ipa_to_instance.sh /path/to/App.ipa vm.instances/<实例名>
+zsh scripts/install_ipa_to_instance.sh /path/to/App.ipa <实例名>
 ```
 
 参数顺序也可以反过来：
 
 ```bash
-zsh scripts/install_ipa_to_instance.sh vm.instances/<实例名> /path/to/App.tipa
+zsh scripts/install_ipa_to_instance.sh <实例名> /path/to/App.tipa
 ```
 
 双击交互版：

@@ -124,6 +124,64 @@ vpa_instance_name_for_port() {
   print -r -- "ssh-${port}"
 }
 
+vpa_read_env_value() {
+  local env_file="$1"
+  local key="$2"
+  [[ -f "$env_file" ]] || return 0
+  awk -F= -v key="$key" '
+    $1 == key {
+      sub(/^[^=]*=/, "")
+      gsub(/^"/, "")
+      gsub(/"$/, "")
+      print
+      exit
+    }
+  ' "$env_file" 2>/dev/null || true
+}
+
+vpa_resolve_vm_dir() {
+  local target="$1"
+  if [[ -d "$target" && -f "$target/config.plist" ]]; then
+    print -r -- "${target:A}"
+    return 0
+  fi
+  if [[ -f "${PROJECT_ROOT}/vm.instances/${target}/config.plist" ]]; then
+    print -r -- "${PROJECT_ROOT}/vm.instances/${target}"
+    return 0
+  fi
+  return 1
+}
+
+vpa_resolve_vm_dir_from_port() {
+  local port="$1"
+  local env_file value
+  for env_file in "${PROJECT_ROOT}"/vm.instances/*/instance.env(N); do
+    value="$(vpa_read_env_value "$env_file" SSH_LOCAL_PORT)"
+    [[ -n "$value" ]] || value="$(vpa_read_env_value "$env_file" VPHONE_SSH_PORT)"
+    if [[ "$value" == "$port" ]]; then
+      print -r -- "${env_file:h}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+vpa_resolve_ssh_port() {
+  local target="$1"
+  local vm_dir env_file port
+  if [[ "$target" == <-> ]]; then
+    print -r -- "$target"
+    return 0
+  fi
+  vm_dir="$(vpa_resolve_vm_dir "$target")" || vpa_die "instance not found: $target"
+  env_file="${vm_dir}/instance.env"
+  port="$(vpa_read_env_value "$env_file" SSH_LOCAL_PORT)"
+  [[ -n "$port" ]] || port="$(vpa_read_env_value "$env_file" VPHONE_SSH_PORT)"
+  [[ -n "$port" ]] || vpa_die "SSH_LOCAL_PORT not found in ${env_file}; start the instance first"
+  [[ "$port" == <-> ]] || vpa_die "invalid SSH port in ${env_file}: ${port}"
+  print -r -- "$port"
+}
+
 vpa_parse_port_first() {
   local first="${1:-}"
   if [[ "$first" == <-> ]]; then

@@ -23,13 +23,25 @@
 默认安装到 Instagram：
 
 ```bash
+zsh scripts/install_instagram_audit_tweak_to_instance.sh instagram-01
+```
+
+也可以直接传实例目录：
+
+```bash
+zsh scripts/install_instagram_audit_tweak_to_instance.sh vm.instances/instagram-01
+```
+
+兼容旧写法，直接传 SSH 端口也可以：
+
+```bash
 zsh scripts/install_instagram_audit_tweak_to_instance.sh 2224
 ```
 
 显式指定 bundle：
 
 ```bash
-zsh scripts/install_instagram_audit_tweak_to_instance.sh 2224 com.burbn.instagram
+zsh scripts/install_instagram_audit_tweak_to_instance.sh instagram-01 com.burbn.instagram
 ```
 
 安装位置：

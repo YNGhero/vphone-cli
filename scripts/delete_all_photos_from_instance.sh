@@ -4,11 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PATH="${PROJECT_ROOT}/.tools/shims:${PROJECT_ROOT}/.tools/bin:${PROJECT_ROOT}/.venv/bin:${HOME}/Library/Python/3.9/bin:${HOME}/Library/Python/3.14/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+source "${PROJECT_ROOT}/scripts/vphone_app_state_common.sh"
 
 usage() {
   cat <<'USAGE'
 Usage:
-  zsh scripts/delete_all_photos_from_instance.sh [SSH_PORT] [--yes]
+  zsh scripts/delete_all_photos_from_instance.sh [实例名|VM目录|SSH端口] [--yes]
 
 Defaults:
   SSH_PORT: ${SSH_LOCAL_PORT:-2224}
@@ -18,6 +19,8 @@ Photos database/schema intact, purges asset rows directly, removes DCIM media
 files and thumbnails, then restarts Photos/assetsd.
 
 Examples:
+  zsh scripts/delete_all_photos_from_instance.sh instagram-01
+  zsh scripts/delete_all_photos_from_instance.sh vm.instances/instagram-01 --yes
   zsh scripts/delete_all_photos_from_instance.sh 2224
   zsh scripts/delete_all_photos_from_instance.sh 2224 --yes
 USAGE
@@ -25,6 +28,7 @@ USAGE
 
 SSH_PORT="${SSH_LOCAL_PORT:-2224}"
 ASSUME_YES=0
+TARGET=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -36,12 +40,18 @@ for arg in "$@"; do
       ASSUME_YES=1
       ;;
     <->)
+      TARGET="$arg"
       SSH_PORT="$arg"
       ;;
     *)
-      echo "[-] unknown argument: $arg" >&2
-      usage >&2
-      exit 2
+      if [[ -z "$TARGET" ]] && vpa_resolve_vm_dir "$arg" >/dev/null 2>&1; then
+        TARGET="$arg"
+        SSH_PORT="$(vpa_resolve_ssh_port "$arg")"
+      else
+        echo "[-] unknown argument: $arg" >&2
+        usage >&2
+        exit 2
+      fi
       ;;
   esac
 done

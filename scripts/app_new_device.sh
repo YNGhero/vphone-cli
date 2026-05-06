@@ -9,7 +9,7 @@ source "${PROJECT_ROOT}/scripts/vphone_app_state_common.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  zsh scripts/app_new_device.sh [SSH_PORT] <bundle-id> [options]
+  zsh scripts/app_new_device.sh [实例名|VM目录|SSH端口] <bundle-id> [options]
 
 Options:
   --yes              Do not ask for destructive confirmation
@@ -19,6 +19,8 @@ Options:
   --respring         Restart SpringBoard after reset
 
 Examples:
+  zsh scripts/app_new_device.sh instagram-01 com.example.app --backup-before --yes
+  zsh scripts/app_new_device.sh vm.instances/instagram-01 com.example.app --yes
   zsh scripts/app_new_device.sh 2224 com.example.app --backup-before --yes
   zsh scripts/app_new_device.sh com.example.app --yes
 USAGE
@@ -33,9 +35,14 @@ RELAUNCH=1
 RESPRING=0
 
 args=("$@")
-if (( ${#args[@]} > 0 )) && [[ "${args[1]}" == <-> ]]; then
-  SSH_PORT="${args[1]}"
-  args=("${args[@]:1}")
+if (( ${#args[@]} > 0 )); then
+  if [[ "${args[1]}" == <-> ]]; then
+    SSH_PORT="${args[1]}"
+    args=("${args[@]:1}")
+  elif vpa_resolve_vm_dir "${args[1]}" >/dev/null 2>&1; then
+    SSH_PORT="$(vpa_resolve_ssh_port "${args[1]}")"
+    args=("${args[@]:1}")
+  fi
 fi
 
 while (( ${#args[@]} > 0 )); do

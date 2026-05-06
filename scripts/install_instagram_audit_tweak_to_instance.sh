@@ -9,10 +9,11 @@ source "${PROJECT_ROOT}/scripts/vphone_app_state_common.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  zsh scripts/install_instagram_audit_tweak_to_instance.sh <SSH_PORT> [bundle-id ...]
+  zsh scripts/install_instagram_audit_tweak_to_instance.sh <实例名|VM目录|SSH端口> [bundle-id ...]
 
 Examples:
-  zsh scripts/install_instagram_audit_tweak_to_instance.sh 2224
+  zsh scripts/install_instagram_audit_tweak_to_instance.sh instagram-01
+  zsh scripts/install_instagram_audit_tweak_to_instance.sh vm.instances/instagram-01
   zsh scripts/install_instagram_audit_tweak_to_instance.sh 2224 com.burbn.instagram
 
 Notes:
@@ -23,9 +24,9 @@ USAGE
 }
 
 (( $# >= 1 )) || { usage; exit 1; }
-SSH_PORT="$1"
+TARGET="$1"
 shift
-[[ "$SSH_PORT" == <-> ]] || vpa_die "SSH_PORT must be numeric: $SSH_PORT"
+SSH_PORT="$(vpa_resolve_ssh_port "$TARGET")"
 
 bundles=("$@")
 if (( ${#bundles[@]} == 0 )); then
@@ -60,7 +61,7 @@ qdir="$(vpa_quote_args "$REMOTE_DIR")"
 qdylib="$(vpa_quote_args "$REMOTE_DYLIB")"
 qplist="$(vpa_quote_args "$REMOTE_PLIST")"
 
-vpa_say "installing InstagramAuditTweak to localhost:${SSH_PORT}"
+vpa_say "installing InstagramAuditTweak to target=${TARGET} (SSH localhost:${SSH_PORT})"
 vpa_ssh "$SSH_PORT" "mkdir -p ${qdir}" >/dev/null
 vpa_ssh "$SSH_PORT" "cat > ${qdylib}" < "$DYLIB"
 vpa_ssh "$SSH_PORT" "cat > ${qplist}" < "$TMP_PLIST"

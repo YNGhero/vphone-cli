@@ -19,6 +19,13 @@
 对 SSH 端口 `2224` 的 Instagram 启用：
 
 ```bash
+zsh scripts/install_profile_tweak_to_instance.sh instagram-01 com.burbn.instagram
+```
+
+也支持直接传实例目录或 SSH 端口：
+
+```bash
+zsh scripts/install_profile_tweak_to_instance.sh vm.instances/instagram-01 com.burbn.instagram
 zsh scripts/install_profile_tweak_to_instance.sh 2224 com.burbn.instagram
 ```
 
@@ -36,7 +43,7 @@ zsh scripts/install_profile_tweak_to_instance.sh 2224 com.burbn.instagram
 随机生成一个 profile，不清理 App 数据：
 
 ```bash
-zsh scripts/app_profile_set.sh 2224 com.burbn.instagram
+zsh scripts/app_profile_set.sh instagram-01 com.burbn.instagram
 ```
 
 默认会动态生成：
@@ -62,7 +69,7 @@ zsh scripts/app_profile_set.sh 2224 com.burbn.instagram
 指定部分字段：
 
 ```bash
-zsh scripts/app_profile_set.sh 2224 com.burbn.instagram \
+zsh scripts/app_profile_set.sh instagram-01 com.burbn.instagram \
   --device-name 'iPhone' \
   --product-type iPhone17,3 \
   --locale en_US \
@@ -73,7 +80,7 @@ zsh scripts/app_profile_set.sh 2224 com.burbn.instagram \
 如果目标 App 需要读取序列号、Wi-Fi MAC、ProductType 等 MobileGestalt 字段，可以额外开启：
 
 ```bash
-zsh scripts/app_profile_set.sh 2224 com.burbn.instagram --hook-mobilegestalt
+zsh scripts/app_profile_set.sh instagram-01 com.burbn.instagram --hook-mobilegestalt
 ```
 
 `--hook-mobilegestalt` 会 hook `MGCopyAnswer`。默认不开启是为了兼容性；确认目标 App 稳定后再打开。
@@ -81,7 +88,7 @@ zsh scripts/app_profile_set.sh 2224 com.burbn.instagram --hook-mobilegestalt
 如果只是想确认目标 App 启动时读取了哪些设备参数，先用安全审计模式：
 
 ```bash
-zsh scripts/app_profile_set.sh 2224 com.burbn.instagram \
+zsh scripts/app_profile_set.sh instagram-01 com.burbn.instagram \
   --audit-reads
 ```
 
@@ -115,7 +122,7 @@ done
 也可以上传自己准备好的 JSON：
 
 ```bash
-zsh scripts/app_profile_set.sh 2224 com.burbn.instagram --from-json ./profile.json
+zsh scripts/app_profile_set.sh instagram-01 com.burbn.instagram --from-json ./profile.json
 ```
 
 ## 3. 一键新机时自动生成 profile

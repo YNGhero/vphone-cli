@@ -29,10 +29,12 @@ die() { print -r -- "[-] $*" >&2; exit 1; }
 usage() {
   cat <<USAGE
 Usage:
-  zsh scripts/install_ipa_to_instance.sh <ipa-or-tipa-path> <vm-dir>
-  zsh scripts/install_ipa_to_instance.sh <vm-dir> <ipa-or-tipa-path>
+  zsh scripts/install_ipa_to_instance.sh <ipa-or-tipa-path> <vm-dir|实例名>
+  zsh scripts/install_ipa_to_instance.sh <vm-dir|实例名> <ipa-or-tipa-path>
 
 Examples:
+  zsh scripts/install_ipa_to_instance.sh ~/Downloads/App.ipa instagram-01
+  zsh scripts/install_ipa_to_instance.sh instagram-01 ~/Downloads/App.tipa
   zsh scripts/install_ipa_to_instance.sh ~/Downloads/App.ipa vm.instances/phone-01
   zsh scripts/install_ipa_to_instance.sh vm.instances/phone-01 ~/Downloads/App.tipa
 USAGE
@@ -51,6 +53,19 @@ latest_instance_dir() {
     | head -1 \
     | sed 's/^[0-9][0-9]* //' \
     | xargs -I{} dirname "{}" 2>/dev/null || true
+}
+
+resolve_vm_input() {
+  local input="$1"
+  if [[ -f "${input:A}/config.plist" ]]; then
+    print -r -- "${input:A}"
+    return 0
+  fi
+  if [[ -f "${PROJECT_ROOT}/vm.instances/${input}/config.plist" ]]; then
+    print -r -- "${PROJECT_ROOT}/vm.instances/${input}"
+    return 0
+  fi
+  return 1
 }
 
 parse_args_or_prompt() {
@@ -178,7 +193,11 @@ main() {
   [[ -n "$VM_INPUT" ]] || die "missing target VM dir"
 
   IPA_PATH="${IPA_INPUT:A}"
-  VM_DIR="${VM_INPUT:A}"
+  if resolve_vm_input "$VM_INPUT" >/dev/null 2>&1; then
+    VM_DIR="$(resolve_vm_input "$VM_INPUT")"
+  else
+    VM_DIR="${VM_INPUT:A}"
+  fi
   SOCKET_PATH="${VM_DIR}/vphone.sock"
 
   [[ -f "$IPA_PATH" ]] || die "IPA/TIPA not found: ${IPA_PATH}"
