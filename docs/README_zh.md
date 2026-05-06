@@ -883,6 +883,8 @@ vm.instances/<实例名>/launch_gui.command
 
 本地 GUI 菜单中文化、toolbar 快捷按钮、多开管理器、`vphone.sock` 自动化扩展的设计和任务拆分，见 [GUI 二开设计与任务拆分](./GUI_SECONDARY_DEVELOPMENT_zh.md)。
 
+如果要对 Instagram 做 **只抓不改** 的运行时审计，并把已捕获字段持续写入单个账号 JSON（如 `authorization`、`session_id`、`ds_user_id`、`x_ig_device_id` 等），见 [InstagramAuditTweak 使用说明](./INSTAGRAM_AUDIT_TWEAK_zh.md)。
+
 当前右侧快捷栏包含：安装 IPA、导入图片、粘贴输入ASCII、清空相册、截图、重启、Restart SpringBoard、SSH 信息。
 
 多开管理器有两个入口。

@@ -238,6 +238,13 @@
   - `NONE_INTERACTIVE=1 SKIP_PROJECT_SETUP=1 make setup_machine JB=1` reaches the Swift patch stage and reports `[patch-firmware] applied 154 patches for jb`, then fails when the flow transitions into `make boot_dfu`.
   - `make boot_dfu` originally failed at launch-policy time with exit `137` / signal `9` because the release `vphone-cli` could not launch on this host.
   - `amfidont` was then validated on-host:
+
+## Non-Firmware Patch Notes
+
+- 2026-05-06: added `InstagramAuditTweak`, a **host/user-space app audit tweak** for `com.burbn.instagram`.
+  - Scope: request headers (`User-Agent`, `Cookie`, `Authorization`, `X-IG-*`, `IG-U-*`, `X-MID`), cookie storage events, and device-read APIs (`UIDevice`, `IDFA`, `IDFV`, `Locale`, `TimeZone`, `MGCopyAnswer`).
+  - Output: guest-side single account JSON at `/tmp/instagram_account.json` (latest captured fields merged in place).
+  - This change does **not** alter any boot-chain / kernel / CFW patch counts in the tables above.
     - it can attach to `/usr/libexec/amfid`
     - the initial path allow rule failed because `AMFIPathValidator` reports URL-encoded paths (`/Volumes/My%20Shared%20Files/...`)
     - rerunning `amfidont` with the encoded project path and the release-binary CDHash allows the signed release `vphone-cli` to launch
