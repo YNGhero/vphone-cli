@@ -21,6 +21,8 @@ Options:
   --wifi <mac>             MobileGestalt WiFiAddress
   --bluetooth <mac>        MobileGestalt BluetoothAddress
   --product-type <value>   MobileGestalt ProductType, e.g. iPhone17,3
+  --spoof-product-type     Spoof hw.machine/uname and MG ProductType (default)
+  --no-spoof-product-type  Do not spoof low-level product identifier
   --model <value>          UIDevice model/localizedModel, default iPhone
   --system-version <ver>   UIDevice.systemVersion / MG ProductVersion
   --build-version <ver>    MG BuildVersion
@@ -46,6 +48,7 @@ BUNDLE_ID=""
 FROM_JSON=""
 ENABLED=1
 HOOK_MOBILEGESTALT=0
+SPOOF_PRODUCT_TYPE=1
 AUDIT_READS=0
 AUDIT_MOBILEGESTALT=0
 
@@ -68,6 +71,8 @@ while (( ${#args[@]} > 0 )); do
     --from-json=*) FROM_JSON="${args[1]#--from-json=}"; args=("${args[@]:1}") ;;
     --disabled) ENABLED=0; args=("${args[@]:1}") ;;
     --hook-mobilegestalt) HOOK_MOBILEGESTALT=1; args=("${args[@]:1}") ;;
+    --spoof-product-type) SPOOF_PRODUCT_TYPE=1; args=("${args[@]:1}") ;;
+    --no-spoof-product-type) SPOOF_PRODUCT_TYPE=0; args=("${args[@]:1}") ;;
     --audit-reads) AUDIT_READS=1; args=("${args[@]:1}") ;;
     --audit-mobilegestalt) AUDIT_MOBILEGESTALT=1; args=("${args[@]:1}") ;;
     --device-name|--idfa|--idfv|--udid|--serial|--wifi|--bluetooth|--product-type|--model|--system-version|--build-version|--locale|--languages|--timezone)
@@ -97,12 +102,12 @@ else
     "${OPTS[serial]:-}" "${OPTS[wifi]:-}" "${OPTS[bluetooth]:-}" "${OPTS[product-type]:-}" \
     "${OPTS[model]:-}" "${OPTS[system-version]:-}" "${OPTS[build-version]:-}" \
     "${OPTS[locale]:-}" "${OPTS[languages]:-}" "${OPTS[timezone]:-}" "$HOOK_MOBILEGESTALT" \
-    "$AUDIT_READS" "$AUDIT_MOBILEGESTALT" > "$TMP_JSON" <<'PY'
+    "$SPOOF_PRODUCT_TYPE" "$AUDIT_READS" "$AUDIT_MOBILEGESTALT" > "$TMP_JSON" <<'PY'
 import json, random, sys, time, uuid
 bundle, enabled = sys.argv[1], bool(int(sys.argv[2]))
 (device_name, idfa, idfv, udid, serial, wifi, bt, product_type, model,
  system_version, build_version, locale, languages, timezone, hook_mg,
- audit_reads, audit_mg) = sys.argv[3:]
+ spoof_product_type, audit_reads, audit_mg) = sys.argv[3:]
 
 def mac():
     return '02:%02x:%02x:%02x:%02x:%02x' % tuple(random.randrange(256) for _ in range(5))
@@ -146,6 +151,7 @@ profile = {
     'model': model or 'iPhone',
     'localizedModel': model or 'iPhone',
     'productType': product_type or 'iPhone17,3',
+    'spoofProductType': bool(int(spoof_product_type)),
     'systemName': 'iOS',
     'systemVersion': system_version,
     'buildVersion': build_version,

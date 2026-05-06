@@ -4,6 +4,11 @@
 #import <dlfcn.h>
 #import <fcntl.h>
 #import <unistd.h>
+#import <errno.h>
+#import <stdlib.h>
+#import <string.h>
+#import <sys/sysctl.h>
+#import <sys/utsname.h>
 
 static NSDictionary *VPProfile;
 static NSString *VPBundleID;
@@ -12,6 +17,7 @@ static BOOL VPEnabled;
 static BOOL VPAuditReads;
 static BOOL VPAuditMobileGestalt;
 static BOOL VPSpoofMobileGestalt;
+static BOOL VPSpoofProductType;
 static NSMutableSet<NSString *> *VPLoggedReads;
 
 static void VPLog(NSString *format, ...) {
@@ -243,13 +249,29 @@ static id rep_NSUserDefaults_objectForKey(id self, SEL _cmd, id key) {
 
 static CFTypeRef (*orig_MGCopyAnswer)(CFStringRef key);
 static CFTypeRef (*orig_MGCopyAnswerWithError)(CFStringRef key, CFDictionaryRef options, CFErrorRef *error);
+static int (*orig_uname)(struct utsname *);
+static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
+static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 
 typedef void (*MSHookFunctionType)(void *symbol, void *replace, void **result);
 
-static CFTypeRef VPCopyGestaltValue(CFStringRef cfKey) {
+static NSString *VPProductType(void) {
+    return VPString(@"productType") ?: VPString(@"hardwareMachine");
+}
+
+static BOOL VPIsProductGestaltKey(NSString *key) {
+    if (!key.length) return NO;
+    return [key isEqualToString:@"ProductType"] ||
+           [key isEqualToString:@"MarketingProductName"] ||
+           [key isEqualToString:@"HWModelStr"];
+}
+
+static CFTypeRef VPCopyGestaltValue(CFStringRef cfKey, BOOL productOnly) {
     if (!cfKey) return NULL;
     NSString *key = (__bridge NSString *)cfKey;
     NSString *value = nil;
+
+    if (productOnly && !VPIsProductGestaltKey(key)) return NULL;
 
     if ([key isEqualToString:@"DeviceName"] ||
         [key isEqualToString:@"UserAssignedDeviceName"] ||
@@ -267,9 +289,11 @@ static CFTypeRef VPCopyGestaltValue(CFStringRef cfKey) {
         value = VPString(@"wifiAddress");
     } else if ([key isEqualToString:@"BluetoothAddress"]) {
         value = VPString(@"bluetoothAddress");
-    } else if ([key isEqualToString:@"ProductType"] ||
-               [key isEqualToString:@"HWModelStr"]) {
-        value = VPString(@"productType");
+    } else if ([key isEqualToString:@"ProductType"]) {
+        value = VPProductType();
+    } else if ([key isEqualToString:@"HWModelStr"]) {
+        value = VPString(@"hardwareModel");
+        if (!productOnly && !value.length) value = VPProductType();
     } else if ([key isEqualToString:@"ProductVersion"]) {
         value = VPString(@"systemVersion");
     } else if ([key isEqualToString:@"BuildVersion"]) {
@@ -291,17 +315,78 @@ static CFTypeRef rep_MGCopyAnswer(CFStringRef key) {
     if (VPAuditMobileGestalt) {
         VPLogReadOnce([NSString stringWithFormat:@"MGCopyAnswer:%@", keyString]);
     }
-    if (VPSpoofMobileGestalt) {
-        CFTypeRef value = VPCopyGestaltValue(key);
+    if (VPSpoofMobileGestalt || VPSpoofProductType) {
+        CFTypeRef value = VPCopyGestaltValue(key, !VPSpoofMobileGestalt);
         if (value) return value;
     }
     return orig_MGCopyAnswer ? orig_MGCopyAnswer(key) : NULL;
 }
 
 static CFTypeRef rep_MGCopyAnswerWithError(CFStringRef key, CFDictionaryRef options, CFErrorRef *error) {
-    CFTypeRef value = VPCopyGestaltValue(key);
+    CFTypeRef value = VPCopyGestaltValue(key, NO);
     if (value) return value;
     return orig_MGCopyAnswerWithError ? orig_MGCopyAnswerWithError(key, options, error) : NULL;
+}
+
+static int VPReturnSysctlString(NSString *value, void *oldp, size_t *oldlenp) {
+    if (!value.length) return -2;
+    const char *bytes = value.UTF8String;
+    if (!bytes) return -2;
+    size_t needed = strlen(bytes) + 1;
+    if (!oldlenp) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (!oldp) {
+        *oldlenp = needed;
+        return 0;
+    }
+    size_t available = *oldlenp;
+    *oldlenp = needed;
+    if (available < needed) {
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(oldp, bytes, needed);
+    return 0;
+}
+
+static int rep_uname(struct utsname *name) {
+    int result = orig_uname ? orig_uname(name) : 0;
+    NSString *productType = VPProductType();
+    if (result == 0 && name && productType.length) {
+        snprintf(name->machine, sizeof(name->machine), "%s", productType.UTF8String);
+    }
+    return result;
+}
+
+static int rep_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    if (VPSpoofProductType && name && !newp && newlen == 0) {
+        if (strcmp(name, "hw.machine") == 0) {
+            int handled = VPReturnSysctlString(VPProductType(), oldp, oldlenp);
+            if (handled != -2) return handled;
+        } else if (strcmp(name, "hw.model") == 0) {
+            int handled = VPReturnSysctlString(VPString(@"hardwareModel"), oldp, oldlenp);
+            if (handled != -2) return handled;
+        }
+    }
+    return orig_sysctlbyname ? orig_sysctlbyname(name, oldp, oldlenp, newp, newlen) : -1;
+}
+
+static int rep_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    if (VPSpoofProductType && name && namelen >= 2 && !newp && newlen == 0 && name[0] == CTL_HW) {
+        if (name[1] == HW_MACHINE) {
+            int handled = VPReturnSysctlString(VPProductType(), oldp, oldlenp);
+            if (handled != -2) return handled;
+        }
+#ifdef HW_MODEL
+        if (name[1] == HW_MODEL) {
+            int handled = VPReturnSysctlString(VPString(@"hardwareModel"), oldp, oldlenp);
+            if (handled != -2) return handled;
+        }
+#endif
+    }
+    return orig_sysctl ? orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen) : -1;
 }
 
 static void VPHookInstanceMethod(Class cls, SEL sel, IMP replacement, IMP *orig) {
@@ -348,10 +433,60 @@ static void VPHookObjectiveC(void) {
     VPHookInstanceMethod(NSUserDefaults.class, @selector(objectForKey:), (IMP)rep_NSUserDefaults_objectForKey, (IMP *)&orig_NSUserDefaults_objectForKey);
 }
 
+static MSHookFunctionType VPGetMSHookFunction(void) {
+    static MSHookFunctionType hook;
+    static BOOL tried;
+    if (tried) return hook;
+    tried = YES;
+    hook = (MSHookFunctionType)dlsym(RTLD_DEFAULT, "MSHookFunction");
+    if (!hook) {
+        const char *envPath = getenv("JB_TWEAKLOADER_PATH");
+        const char *paths[] = {
+            "/cores/libellekit.dylib",
+            "/var/jb/usr/lib/libellekit.dylib",
+            "/usr/lib/libellekit.dylib",
+            "/var/jb/usr/lib/libsubstrate.dylib",
+            "/usr/lib/libsubstrate.dylib",
+            NULL
+        };
+        if (envPath && envPath[0]) {
+            void *handle = dlopen(envPath, RTLD_NOW | RTLD_GLOBAL);
+            if (handle) hook = (MSHookFunctionType)dlsym(handle, "MSHookFunction");
+        }
+        for (size_t i = 0; paths[i]; i++) {
+            if (hook) break;
+            if (!paths[i][0]) continue;
+            void *handle = dlopen(paths[i], RTLD_NOW | RTLD_GLOBAL);
+            if (!handle) continue;
+            hook = (MSHookFunctionType)dlsym(handle, "MSHookFunction");
+            if (hook) break;
+        }
+    }
+    if (!hook) VPLog(@"MSHookFunction unavailable; C function hooks disabled");
+    return hook;
+}
+
+static void VPHookSymbol(const char *libraryPath, const char *symbolName, void *replacement, void **original) {
+    MSHookFunctionType hook = VPGetMSHookFunction();
+    if (!hook || !symbolName || !replacement || !original) return;
+    void *handle = libraryPath ? dlopen(libraryPath, RTLD_NOW | RTLD_GLOBAL) : RTLD_DEFAULT;
+    void *sym = handle ? dlsym(handle, symbolName) : NULL;
+    if (!sym) sym = dlsym(RTLD_DEFAULT, symbolName);
+    if (sym) {
+        hook(sym, replacement, original);
+    } else {
+        VPLog(@"symbol not found: %s", symbolName);
+    }
+}
+
+static void VPHookHardwareIdentity(void) {
+    VPHookSymbol("/usr/lib/libSystem.B.dylib", "uname", (void *)rep_uname, (void **)&orig_uname);
+    VPHookSymbol("/usr/lib/libSystem.B.dylib", "sysctlbyname", (void *)rep_sysctlbyname, (void **)&orig_sysctlbyname);
+    VPHookSymbol("/usr/lib/libSystem.B.dylib", "sysctl", (void *)rep_sysctl, (void **)&orig_sysctl);
+}
+
 static void VPHookMobileGestalt(void) {
-    void *substrate = dlopen("/var/jb/usr/lib/libsubstrate.dylib", RTLD_NOW | RTLD_GLOBAL);
-    if (!substrate) substrate = dlopen("/usr/lib/libsubstrate.dylib", RTLD_NOW | RTLD_GLOBAL);
-    MSHookFunctionType hook = substrate ? (MSHookFunctionType)dlsym(substrate, "MSHookFunction") : NULL;
+    MSHookFunctionType hook = VPGetMSHookFunction();
     if (!hook) return;
 
     void *mg = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW | RTLD_GLOBAL);
@@ -370,10 +505,14 @@ static void VPhoneProfileTweakInit(void) {
         VPAuditReads = VPBool(@"auditReads", NO);
         VPAuditMobileGestalt = VPBool(@"auditMobileGestalt", NO);
         VPSpoofMobileGestalt = VPBool(@"hookMobileGestalt", NO);
+        VPSpoofProductType = VPBool(@"spoofProductType", YES) && VPProductType().length > 0;
         VPHookObjectiveC();
-        if (VPSpoofMobileGestalt || VPAuditMobileGestalt) {
+        if (VPSpoofProductType) {
+            VPHookHardwareIdentity();
+        }
+        if (VPSpoofMobileGestalt || VPAuditMobileGestalt || VPSpoofProductType) {
             VPHookMobileGestalt();
         }
-        VPLog(@"enabled bundle=%@ profile=%@ auditReads=%d auditMobileGestalt=%d hookMobileGestalt=%d", VPBundleID, VPProfilePath, VPAuditReads, VPAuditMobileGestalt, VPSpoofMobileGestalt);
+        VPLog(@"enabled bundle=%@ profile=%@ auditReads=%d auditMobileGestalt=%d hookMobileGestalt=%d spoofProductType=%d productType=%@", VPBundleID, VPProfilePath, VPAuditReads, VPAuditMobileGestalt, VPSpoofMobileGestalt, VPSpoofProductType, VPProductType());
     }
 }

@@ -237,4 +237,4 @@ sshpass -p alpine ssh -p 2224 root@127.0.0.1 \
 /var/mobile/vphone_app_profiles/<bundle-id>.json
 ```
 
-并 hook IDFA、IDFV、UIDevice、MobileGestalt、语言区域和时区等常见接口。后续可继续扩展位置、WebView 指纹、越狱检测绕过等。
+并 hook IDFA、IDFV、UIDevice、低层机型标识（`uname` / `sysctl hw.machine`）、MobileGestalt、语言区域和时区等常见接口。后续可继续扩展位置、WebView 指纹、越狱检测绕过等。

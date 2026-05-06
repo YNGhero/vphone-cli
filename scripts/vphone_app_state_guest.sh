@@ -419,7 +419,13 @@ generate_profile() {
     h="$(printf '%s' "$h" | tr '[:lower:]' '[:upper:]')"
     printf '%s-%s-4%s-8%s-%s\n' "${h:0:8}" "${h:8:4}" "${h:13:3}" "${h:17:3}" "${h:20:12}"
   }
-  local idfa idfv oudid serial wifi bt name product_type model system_name system_version build_version locale_identifier time_zone
+  json_bool() {
+    case "${1:-}" in
+      1|true|TRUE|yes|YES|on|ON) printf 'true' ;;
+      *) printf 'false' ;;
+    esac
+  }
+  local idfa idfv oudid serial wifi bt name product_type model system_name system_version build_version locale_identifier time_zone spoof_product_type
   idfa="$(random_uuid)"
   idfv="$(random_uuid)"
   oudid="$(random_uuid)"
@@ -449,6 +455,7 @@ generate_profile() {
   build_version="${VPHONE_PROFILE_BUILD_VERSION:-}"
   locale_identifier="${VPHONE_PROFILE_LOCALE:-$locale_identifier}"
   time_zone="${VPHONE_PROFILE_TIMEZONE:-$time_zone}"
+  spoof_product_type="$(json_bool "${VPHONE_PROFILE_SPOOF_PRODUCT_TYPE:-1}")"
   cat > "$out" <<JSON
 {
   "enabled": true,
@@ -464,6 +471,7 @@ generate_profile() {
   "model": "$model",
   "localizedModel": "$model",
   "productType": "$product_type",
+  "spoofProductType": $spoof_product_type,
   "systemName": "$system_name",
   "systemVersion": "$system_version",
   "buildVersion": "$build_version",

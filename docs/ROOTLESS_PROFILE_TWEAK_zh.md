@@ -62,9 +62,11 @@ zsh scripts/app_profile_set.sh instagram-01 com.burbn.instagram
 - `preferredLanguages`: `["en"]`
 - `systemName`: `iOS`
 - `model` / `localizedModel`: `iPhone`
+- `productType`: `iPhone17,3`
+- `spoofProductType`: `true`
 - `hookMobileGestalt`: `false`
 
-说明：`UIDevice.systemName` 和 `UIDevice.model` 在真实 iPhone 上本来就是稳定值，默认不乱随机；`systemVersion` / `buildVersion` 默认留空并回退到系统真实值，避免和真实运行环境不一致。
+说明：`UIDevice.systemName` 和 `UIDevice.model` 在真实 iPhone 上本来就是稳定值，默认不乱随机；`systemVersion` / `buildVersion` 默认留空并回退到系统真实值，避免和真实运行环境不一致。`spoofProductType=true` 只覆盖低风险的机型标识读取（`uname` / `sysctl hw.machine` / `MGCopyAnswer ProductType`），避免 Instagram UA 暴露虚拟机底层的 `iPhone99,11`。旧 profile 里缺少 `spoofProductType` 字段时，tweak 也会按 `true` 处理；如需关闭请显式写入 `false`。
 
 指定部分字段：
 
@@ -75,6 +77,12 @@ zsh scripts/app_profile_set.sh instagram-01 com.burbn.instagram \
   --locale en_US \
   --languages en \
   --timezone America/Los_Angeles
+```
+
+如果需要临时关闭底层机型标识伪装：
+
+```bash
+zsh scripts/app_profile_set.sh instagram-01 com.burbn.instagram --no-spoof-product-type
 ```
 
 如果目标 App 需要读取序列号、Wi-Fi MAC、ProductType 等 MobileGestalt 字段，可以额外开启：
@@ -105,6 +113,7 @@ sshpass -p alpine ssh -p 2224 root@127.0.0.1 \
 - `auditMobileGestalt=true`：只记录 `MGCopyAnswer:<key>`，默认不改返回值；这是实验模式，Instagram 上可能触发启动 watchdog，先不要默认开启。
 - `auditMobileGestalt=true` 且 `hookMobileGestalt=false` 时，MobileGestalt 只是 log-only，用来判断是否读取 UDID/序列号/MAC 等底层字段。
 - `hookMobileGestalt=true` 时，才会真正返回 profile 里的 UDID/序列号/MAC 等值。
+- `spoofProductType=true` 不等同于 `hookMobileGestalt=true`：它只处理 UA 常用的 `ProductType` / `hw.machine` / `uname.machine`，不会默认改 UDID、序列号、Wi-Fi MAC。
 
 如果要低风险判断目标包里是否显式引用 MobileGestalt/UDID 字符串，可以先做静态扫描：
 
@@ -134,6 +143,7 @@ zsh scripts/app_new_device.sh 2224 com.burbn.instagram --backup-before --yes
 ```
 
 新版生成的 `idfa` / `idfv` / `udid` 都是标准 UUID 格式，并且默认语言列表为 `["en"]`，地区/时区会在英语地区中随机选择。
+同时 profile 默认写入 `spoofProductType=true`，重开 App 后 Instagram UA 中的机型应从虚拟机底层 `iPhone99,11` 变成 profile 的 `productType`（默认 `iPhone17,3`，可通过 `VPHONE_PROFILE_PRODUCT_TYPE` 指定）。
 
 ## 4. 当前已 hook 的接口
 
@@ -156,6 +166,16 @@ zsh scripts/app_new_device.sh 2224 com.burbn.instagram --backup-before --yes
 - `NSTimeZone.defaultTimeZone`
 - `NSUserDefaults objectForKey:` 中的 `AppleLanguages` / `AppleLocale`
 
+### Unix / libSystem 机型标识
+
+当 profile 中 `spoofProductType=true` 时覆盖：
+
+- `uname()` 返回结构里的 `machine`
+- `sysctlbyname("hw.machine")`
+- `sysctl(CTL_HW, HW_MACHINE)`
+
+可选字段 `hardwareModel` 只在读取 `hw.model` / `HWModelStr` 时使用；默认不生成，避免把 ProductType 错写成 board model。
+
 ### MobileGestalt
 
 通过 ElleKit/Substrate 的 `MSHookFunction` hook：
@@ -176,6 +196,7 @@ OpaqueDeviceID
 WiFiAddress
 BluetoothAddress
 ProductType
+HWModelStr
 ProductVersion
 BuildVersion
 MarketingProductName
@@ -202,6 +223,7 @@ RegionInfo
   "model": "iPhone",
   "localizedModel": "iPhone",
   "productType": "iPhone17,3",
+  "spoofProductType": true,
   "systemName": "iOS",
   "systemVersion": "",
   "buildVersion": "",
