@@ -23,6 +23,9 @@ class VPhoneMenuController {
     var installPackageItem: NSMenuItem?
     var instanceManagerItem: NSMenuItem?
     var instanceInstallPackageItem: NSMenuItem?
+    var instanceAppBackupItem: NSMenuItem?
+    var instanceAppNewDeviceItem: NSMenuItem?
+    var instanceAppRestoreItem: NSMenuItem?
     var instanceImportPhotoItem: NSMenuItem?
     var instanceDeletePhotosItem: NSMenuItem?
     var instanceRebootItem: NSMenuItem?
@@ -87,6 +90,8 @@ class VPhoneMenuController {
         )
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
+
+        mainMenu.addItem(VPhoneStandardMenus.buildEditMenu())
 
         mainMenu.addItem(buildConnectMenu())
         mainMenu.addItem(buildKeysMenu())

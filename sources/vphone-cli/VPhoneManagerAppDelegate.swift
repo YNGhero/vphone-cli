@@ -43,6 +43,8 @@ final class VPhoneManagerAppDelegate: NSObject, NSApplicationDelegate {
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
 
+        mainMenu.addItem(VPhoneStandardMenus.buildEditMenu())
+
         NSApp.mainMenu = mainMenu
     }
 }

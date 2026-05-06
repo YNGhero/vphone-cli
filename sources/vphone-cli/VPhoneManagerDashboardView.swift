@@ -298,7 +298,7 @@ struct VPhoneManagerDashboardView: View {
             } label: {
                 Label("批量启动", systemImage: "play.fill")
             }
-            .disabled(model.selection.isEmpty)
+            .disabled(model.selectedLaunchableRecords.isEmpty)
 
             Button {
                 model.stopSelectedRecords()
@@ -306,6 +306,13 @@ struct VPhoneManagerDashboardView: View {
                 Label("批量停止", systemImage: "stop.fill")
             }
             .disabled(model.selection.isEmpty)
+
+            Button(role: .destructive) {
+                model.deleteSelectedRecords()
+            } label: {
+                Label("批量删除", systemImage: "trash")
+            }
+            .disabled(model.selectedDeletableRecords.isEmpty)
 
             Button {
                 model.installIPASelectedRecords()
@@ -504,7 +511,7 @@ struct VPhoneInstanceCardView: View {
                 Label("停止", systemImage: "stop.fill")
             }
             .buttonStyle(.bordered)
-            .disabled(record.status == .stopped)
+            .disabled(!record.canStop)
 
             Button {
                 model.installIPA(record)
@@ -512,6 +519,7 @@ struct VPhoneInstanceCardView: View {
                 Label("安装", systemImage: "square.and.arrow.down")
             }
             .buttonStyle(.bordered)
+            .disabled(!record.canInstallPackage)
         }
         .controlSize(.small)
         .labelStyle(.titleAndIcon)
@@ -520,16 +528,37 @@ struct VPhoneInstanceCardView: View {
     @ViewBuilder
     private var contextMenu: some View {
         Button("启动 / 打开 GUI") { model.launch(record) }
+            .disabled(!record.canLaunchGUI)
         Button("停止实例") { model.stop(record) }
+            .disabled(!record.canStop)
         Divider()
         Button("克隆实例") { model.clone(record) }
+            .disabled(!record.canClone)
+        Button("删除实例", role: .destructive) { model.delete(record) }
+            .disabled(!record.canDelete)
         Button("安装 IPA/TIPA") { model.installIPA(record) }
+            .disabled(!record.canInstallPackage)
+        Divider()
+        Button("备份 App") { model.appBackup(record) }
+            .disabled(!record.canUseSSHActions)
+        Button("一键新机") { model.appNewDevice(record) }
+            .disabled(!record.canUseSSHActions)
+        Button("还原 App") { model.appRestore(record) }
+            .disabled(!record.canUseSSHActions)
+        Divider()
         Button("导入图片到相册") { model.importPhoto(record) }
+            .disabled(!record.canUseSSHActions)
         Button("清空相册") { model.deletePhotos(record) }
+            .disabled(!record.canUseSSHActions)
         Button("粘贴输入ASCII") { model.typeClipboardASCII(record) }
+            .disabled(!record.canUseHostControlActions)
+        Button("按 IP 定位") { model.setLocationByIP(record) }
+            .disabled(!record.canUseHostControlActions)
         Divider()
         Button("一键重启") { model.reboot(record) }
+            .disabled(!record.canUseSSHActions)
         Button("Restart SpringBoard") { model.respring(record) }
+            .disabled(!record.canUseSSHActions)
         Divider()
         Button("连接信息") { model.showConnectionInfo(record) }
         Button("复制 UDID/ECID") { model.copyIdentity(record) }
@@ -631,7 +660,7 @@ struct VPhoneInstanceLivePreviewView: View {
     @State private var lastError: String?
 
     private var canPreview: Bool {
-        record.status == .running || record.status == .starting
+        record.status == .running && record.socketExists
     }
 
     private var taskID: String {
@@ -710,6 +739,9 @@ struct VPhoneInstanceLivePreviewView: View {
                 return lastError
             }
             return record.socketExists ? "等待实时画面..." : "打开 GUI 后显示实时画面"
+        }
+        if record.status == .starting {
+            return "启动中，暂不抓取预览"
         }
         return record.displayPorts
     }

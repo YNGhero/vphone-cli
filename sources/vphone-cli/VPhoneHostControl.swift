@@ -19,6 +19,7 @@ import ImageIO
 ///   {"t":"key","name":"home"}                   → hardware key (home/power/volup/voldown)
 ///   {"t":"type_ascii","text":"Hello"}           → type ASCII via VM keyboard events
 ///   {"t":"type","text":"Hello"}                 → set guest clipboard
+///   {"t":"location","lat":37.386,"lon":-122.0838,"screen":false} → set guest location
 ///   {"t":"show_window","screen":false}          → reveal hidden GUI window
 ///   {"t":"arrange_window","x":0,"y":0,"w":275,"h":550,"screen":false} → resize/move GUI
 ///   {"t":"terminate_host","screen":false}       → quit vphone-cli host process
@@ -36,6 +37,7 @@ class VPhoneHostControl {
     private var screenRecorder: VPhoneScreenRecorder?
     private weak var control: VPhoneControl?
     private weak var keyHelper: VPhoneKeyHelper?
+    private weak var locationProvider: VPhoneLocationProvider?
     private var showWindowHandler: (() -> Void)?
     private var arrangeWindowHandler: ((NSRect) -> Void)?
 
@@ -64,6 +66,7 @@ class VPhoneHostControl {
         screenRecorder: VPhoneScreenRecorder,
         control: VPhoneControl,
         keyHelper: VPhoneKeyHelper,
+        locationProvider: VPhoneLocationProvider? = nil,
         screenWidth: Int,
         screenHeight: Int,
         showWindow: (() -> Void)? = nil,
@@ -73,6 +76,7 @@ class VPhoneHostControl {
         self.screenRecorder = screenRecorder
         self.control = control
         self.keyHelper = keyHelper
+        self.locationProvider = locationProvider
         self.screenWidth = screenWidth
         self.screenHeight = screenHeight
         self.showWindowHandler = showWindow
@@ -539,6 +543,69 @@ class VPhoneHostControl {
 
             semaphore.wait()
             writeResponse(fd, ok: result.ok, error: result.error, image: result.imageBase64)
+
+        case "location", "set_location":
+            guard let latitude = number(json["lat"] ?? json["latitude"]),
+                  let longitude = number(json["lon"] ?? json["lng"] ?? json["longitude"])
+            else {
+                writeResponse(fd, ok: false, error: "location requires lat and lon")
+                return
+            }
+            guard (-90.0...90.0).contains(latitude),
+                  (-180.0...180.0).contains(longitude)
+            else {
+                writeResponse(fd, ok: false, error: "invalid coordinate: \(latitude), \(longitude)")
+                return
+            }
+
+            let altitude = number(json["alt"] ?? json["altitude"]) ?? 0
+            let horizontalAccuracy = number(json["hacc"] ?? json["horizontalAccuracy"]) ?? 1000
+            let verticalAccuracy = number(json["vacc"] ?? json["verticalAccuracy"]) ?? 50
+            let speed = number(json["speed"]) ?? 0
+            let course = number(json["course"]) ?? -1
+            let name = json["name"] as? String ?? "host-control"
+
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let controller, let ctl = controller.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+                guard ctl.guestCaps.contains("location") else {
+                    result.error = "guest does not support location simulation"
+                    return
+                }
+
+                if let provider = controller.locationProvider {
+                    provider.stopForwarding()
+                    provider.stopReplay()
+                }
+                ctl.sendLocation(
+                    latitude: latitude,
+                    longitude: longitude,
+                    altitude: altitude,
+                    horizontalAccuracy: horizontalAccuracy,
+                    verticalAccuracy: verticalAccuracy,
+                    speed: speed,
+                    course: course
+                )
+
+                result.ok = true
+                result.message = "location set (\(name)): \(latitude), \(longitude)"
+                if wantScreen {
+                    try? await Task.sleep(nanoseconds: UInt64(screenDelay) * 1_000_000)
+                    result.imageBase64 = await controller.captureCompactScreenshot()
+                }
+            }
+
+            semaphore.wait()
+            writeResponse(
+                fd, ok: result.ok, error: result.error, image: result.imageBase64,
+                message: result.message
+            )
 
         case "install_ipa":
             guard let path = json["path"] as? String else {

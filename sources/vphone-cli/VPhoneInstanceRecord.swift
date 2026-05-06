@@ -57,6 +57,34 @@ struct VPhoneInstanceRecord: Identifiable, Hashable {
         vmURL.appendingPathComponent("connection_info.txt")
     }
 
+    var canLaunchGUI: Bool {
+        status == .stopped || status == .running
+    }
+
+    var canStop: Bool {
+        status == .running || status == .starting
+    }
+
+    var canClone: Bool {
+        status == .stopped
+    }
+
+    var canDelete: Bool {
+        status == .stopped || status == .incomplete
+    }
+
+    var canInstallPackage: Bool {
+        status != .incomplete
+    }
+
+    var canUseSSHActions: Bool {
+        status == .running && sshPort != nil
+    }
+
+    var canUseHostControlActions: Bool {
+        status == .running && socketExists
+    }
+
     var displayLanguage: String {
         let lang = clean(language)
         return lang.isEmpty ? "default" : lang

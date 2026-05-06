@@ -452,7 +452,20 @@ CPU 核心数 [4]
 系统语言/地区
 网络模式 nat / bridged / none
 桥接网卡，例如 en0（仅 bridged 时）
+实例名称/前缀 [auto]
 创建数量 [1]
+```
+
+`实例名称/前缀` 留空或输入 `auto` 会继续使用自动时间戳名称。创建母盘时可以直接填固定名称，例如：
+
+```text
+trollstore-clean
+```
+
+这样会创建：
+
+```text
+vm.instances/trollstore-clean/
 ```
 
 每次运行都会新建目录：
@@ -476,6 +489,8 @@ trollstore-a-01
 trollstore-a-02
 trollstore-a-03
 ```
+
+在 Finder 双击 `create_trollstore_instance.command` 时也可以通过交互输入同样的前缀；创建数量大于 1 时会自动追加 `-01/-02`。实例名只能包含英文、数字、下划线和中划线。
 
 创建完成后会自动启动 GUI，并在该实例目录内生成：
 
@@ -530,7 +545,13 @@ VPHONE_LAUNCH_CLOSE_TERMINAL=0 zsh vm.instances/<实例名>/launch_gui.command
 vm.instances/launch_batch_YYYYMMDD-HHMMSS.command
 ```
 
-双击它会按顺序启动这一批实例的 GUI/SSH/VNC/RPC 转发。
+双击它会按顺序启动这一批实例的 GUI/SSH/VNC/RPC 转发。为避免多个 Virtualization GUI 同时启动导致 WindowServer 卡死，批量启动默认是**串行启动**，每台就绪后等待 3 秒再启动下一台。
+
+如果机器资源充足或需要更保守，可以调整间隔：
+
+```bash
+VPHONE_BATCH_LAUNCH_DELAY_SECONDS=20 zsh vm.instances/launch_batch_YYYYMMDD-HHMMSS.command
+```
 
 也可以从终端创建带名称的实例：
 
@@ -576,6 +597,7 @@ VPHONE_VARIANT=jb  # regular / dev / jb；交互中对应 1 / 2 / 3
 CPU=4          # CPU 核心数
 MEMORY_GB=4    # 内存，单位 GB；脚本会自动换算成 Makefile MEMORY=4096
 DISK_SIZE=32   # 磁盘，单位 GB
+# VPHONE_INSTANCE_NAME=trollstore-clean  # 可选固定实例名/前缀；留空则自动生成
 VPHONE_CREATE_COUNT=1  # 一次创建几个实例；交互模式下会在最后询问
 VPHONE_AUTO_LAUNCH_CREATED=1  # 1=创建完自动启动 GUI；0=只创建不启动
 VPHONE_INTERACTIVE_CONFIG=1  # 1=启动时询问；0=完全使用配置文件/环境变量
@@ -701,6 +723,7 @@ RPC: 5910+
 - 创建流程使用 `.multi_create_trollstore.lock` 防止同时执行多个“刷机/创建”流程；**创建新实例请串行执行**。
 - `创建数量` 大于 1 时，脚本是在同一个流程中**批量串行创建**多个实例，不是并行刷机；这是为了避免 DFU/recovery 端点、`setup_logs/`、`hdiutil` 挂载点和全局 vphone 进程清理互相冲突。
 - 已创建好的实例可以并行启动：分别双击各自的 `launch_gui.command`。
+- 多开管理器里的“批量启动”默认会安全串行启动，避免同时拉起多个 GUI/Virtualization 进程压垮 WindowServer。默认间隔 3 秒，可通过 `VPHONE_MANAGER_BATCH_LAUNCH_DELAY=20` 调整。
 
 ### 注意事项
 

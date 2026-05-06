@@ -46,28 +46,35 @@ struct VPhoneInstanceListView: View {
             } label: {
                 Label("启动 GUI", systemImage: "play.fill")
             }
-            .disabled(model.selectedRecord == nil)
+            .disabled(model.selectedRecord?.canLaunchGUI != true)
 
             Button {
                 model.stopSelected()
             } label: {
                 Label("停止", systemImage: "stop.fill")
             }
-            .disabled(model.selectedRecord == nil)
+            .disabled(model.selectedRecord?.canStop != true)
 
             Button {
                 model.cloneSelected()
             } label: {
                 Label("克隆", systemImage: "plus.square.on.square")
             }
-            .disabled(model.selectedRecord == nil || model.selectedRecord?.status != .stopped)
+            .disabled(model.selectedRecord?.canClone != true)
+
+            Button(role: .destructive) {
+                model.deleteSelectedRecords()
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+            .disabled(model.selectedDeletableRecords.isEmpty)
 
             Button {
                 model.installIPASelected()
             } label: {
                 Label("安装 IPA", systemImage: "square.and.arrow.down")
             }
-            .disabled(model.selectedRecord == nil)
+            .disabled(model.selectedRecord?.canInstallPackage != true)
 
             Spacer()
 
@@ -175,9 +182,24 @@ struct VPhoneInstanceListView: View {
         }
         .contextMenu(forSelectionType: VPhoneInstanceRecord.ID.self) { _ in
             Button("启动 GUI") { model.launchSelected() }
+                .disabled(model.selectedRecord?.canLaunchGUI != true)
             Button("停止") { model.stopSelected() }
+                .disabled(model.selectedRecord?.canStop != true)
             Button("克隆") { model.cloneSelected() }
+                .disabled(model.selectedRecord?.canClone != true)
+            Button("删除实例", role: .destructive) { model.deleteSelectedRecords() }
+                .disabled(model.selectedDeletableRecords.isEmpty)
             Button("安装 IPA/TIPA") { model.installIPASelected() }
+                .disabled(model.selectedRecord?.canInstallPackage != true)
+            Divider()
+            Button("备份 App") { model.appBackupSelected() }
+                .disabled(model.selectedRecord?.canUseSSHActions != true)
+            Button("一键新机") { model.appNewDeviceSelected() }
+                .disabled(model.selectedRecord?.canUseSSHActions != true)
+            Button("还原 App") { model.appRestoreSelected() }
+                .disabled(model.selectedRecord?.canUseSSHActions != true)
+            Button("按 IP 定位") { model.setLocationByIPSelected() }
+                .disabled(model.selectedRecord?.canUseHostControlActions != true)
             Divider()
             Button("连接信息") { model.showSelectedConnectionInfo() }
             Button("复制 UDID/ECID") { model.copySelectedIdentity() }

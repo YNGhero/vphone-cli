@@ -17,6 +17,11 @@ CPU=4
 MEMORY_GB=4
 DISK_SIZE=32
 
+# Optional fixed instance name/prefix for create_trollstore_instance.command.
+# Leave commented/empty to generate trollstore-YYYYMMDD-HHMMSS automatically.
+# If VPHONE_CREATE_COUNT > 1, the script appends -01/-02/... to this prefix.
+# VPHONE_INSTANCE_NAME=trollstore-clean
+
 # Number of new instances to create in one create_trollstore_instance.command run.
 # Creation is batched safely/serially; generated instances can be launched after creation.
 VPHONE_CREATE_COUNT=1
@@ -31,6 +36,12 @@ VPHONE_CLONE_COUNT=1
 # 0 = only create VM directories and launch_gui.command files.
 VPHONE_AUTO_LAUNCH_CREATED=1
 VPHONE_AUTO_LAUNCH_CLONED=1
+
+# Cooldown between instances during batch launch, in seconds.
+# Helps avoid macOS WindowServer freezes when several Virtualization GUI windows
+# are opened at the same time.
+VPHONE_BATCH_LAUNCH_DELAY_SECONDS=3
+VPHONE_MANAGER_BATCH_LAUNCH_DELAY=3
 
 # Skip setup_machine's optional final boot-analysis pass after restore/CFW.
 # The one-click creation scripts default to 1; normal GUI launch happens next.

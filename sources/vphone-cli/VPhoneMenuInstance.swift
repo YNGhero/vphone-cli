@@ -23,6 +23,24 @@ extension VPhoneMenuController {
         instanceInstallPackageItem = install
         menu.addItem(install)
 
+        menu.addItem(NSMenuItem.separator())
+
+        let appBackup = makeItem(VPhoneMenuText.Instance.appBackup, action: #selector(backupAppState))
+        instanceAppBackupItem = appBackup
+        menu.addItem(appBackup)
+
+        let appNewDevice = makeItem(
+            VPhoneMenuText.Instance.appNewDevice, action: #selector(newDeviceAppState)
+        )
+        instanceAppNewDeviceItem = appNewDevice
+        menu.addItem(appNewDevice)
+
+        let appRestore = makeItem(VPhoneMenuText.Instance.appRestore, action: #selector(restoreAppState))
+        instanceAppRestoreItem = appRestore
+        menu.addItem(appRestore)
+
+        menu.addItem(NSMenuItem.separator())
+
         let importPhoto = makeItem(
             VPhoneMenuText.Instance.importPhoto, action: #selector(importPhotoToAlbum)
         )
@@ -79,6 +97,133 @@ extension VPhoneMenuController {
 
     @objc func openInstanceManager() {
         onInstanceManagerPressed?()
+    }
+
+    @objc func backupAppState() {
+        guard let port = sshLocalPort() else {
+            showAlert(
+                title: "备份 App",
+                message: "没有找到 SSH 本地端口。请先启动实例并确认 connection_info.txt 已生成。",
+                style: .warning
+            )
+            return
+        }
+
+        guard let options = promptAppBackupOptions() else { return }
+        rememberAppBundleID(options.bundleID)
+
+        let instanceName = instanceEnvValue("INSTANCE_NAME")
+            ?? vmDirectoryURL?.lastPathComponent
+            ?? "instance"
+
+        launchProjectScript(
+            relativePath: "scripts/app_backup.sh",
+            arguments: [
+                port,
+                options.bundleID,
+                options.backupName,
+                "--instance-name",
+                instanceName,
+            ],
+            title: "备份 App"
+        )
+    }
+
+    @objc func newDeviceAppState() {
+        guard let port = sshLocalPort() else {
+            showAlert(
+                title: "一键新机",
+                message: "没有找到 SSH 本地端口。请先启动实例并确认 connection_info.txt 已生成。",
+                style: .warning
+            )
+            return
+        }
+
+        guard let bundleID = promptAppBundleID(
+            title: "一键新机",
+            message: "输入要执行一键新机的 App Bundle ID。",
+            confirmTitle: "继续"
+        ) else { return }
+        rememberAppBundleID(bundleID)
+
+        guard confirmDestructive(
+            title: "一键新机",
+            message: "将清理 \(bundleID) 的 App Data、App Group、Preferences 和 Keychain，并生成新的设备 profile。建议先执行“备份 App”。继续？",
+            confirmTitle: "新机"
+        ) else {
+            return
+        }
+
+        launchProjectScript(
+            relativePath: "scripts/app_new_device.sh",
+            arguments: [port, bundleID, "--yes"],
+            title: "一键新机"
+        )
+    }
+
+    @objc func restoreAppState() {
+        guard let port = sshLocalPort() else {
+            showAlert(
+                title: "还原 App",
+                message: "没有找到 SSH 本地端口。请先启动实例并确认 connection_info.txt 已生成。",
+                style: .warning
+            )
+            return
+        }
+
+        guard let bundleID = promptAppBundleID(
+            title: "还原 App",
+            message: "输入要还原的 App Bundle ID。",
+            confirmTitle: "选择备份"
+        ) else { return }
+        rememberAppBundleID(bundleID)
+
+        guard let archive = chooseAppBackupArchive(bundleID: bundleID) else { return }
+
+        guard confirmDestructive(
+            title: "还原 App",
+            message: "将用备份还原 \(bundleID)，当前 App 数据会先被清理。\n\n备份：\(archive.lastPathComponent)",
+            confirmTitle: "还原"
+        ) else {
+            return
+        }
+
+        launchProjectScript(
+            relativePath: "scripts/app_restore.sh",
+            arguments: [port, bundleID, archive.path, "--yes"],
+            title: "还原 App"
+        )
+    }
+
+    @objc func setLocationByIP() {
+        guard let vmDirectoryURL else {
+            showAlert(title: "按 IP 定位", message: "当前实例目录未知。", style: .warning)
+            return
+        }
+
+        guard FileManager.default.fileExists(
+            atPath: vmDirectoryURL.appendingPathComponent("vphone.sock").path
+        ) else {
+            showAlert(
+                title: "按 IP 定位",
+                message: "当前实例的 GUI/control socket 未就绪。请先等待 vphone.sock ready。",
+                style: .warning
+            )
+            return
+        }
+
+        guard let ip = promptLocationTargetIP(
+            title: "按 IP 定位",
+            message: "输入要查询定位的目标 IP。脚本会调用 ipapi.co 并把经纬度应用到当前实例。",
+            confirmTitle: "定位"
+        ) else { return }
+        rememberLocationTargetIP(ip)
+
+        launchProjectScript(
+            relativePath: "scripts/set_location_by_ip.sh",
+            arguments: [vmDirectoryURL.path, ip],
+            title: "按 IP 定位"
+        )
     }
 
     @objc func importPhotoToAlbum() {
@@ -328,6 +473,129 @@ extension VPhoneMenuController {
 
     private func isNumeric(_ text: String) -> Bool {
         !text.isEmpty && text.allSatisfy { $0 >= "0" && $0 <= "9" }
+    }
+
+    private func defaultAppBundleID() -> String {
+        UserDefaults.standard.string(forKey: "VPhoneLastAppStateBundleID") ?? "com.burbn.instagram"
+    }
+
+    private func rememberAppBundleID(_ bundleID: String) {
+        UserDefaults.standard.set(bundleID, forKey: "VPhoneLastAppStateBundleID")
+    }
+
+    private func defaultLocationTargetIP() -> String {
+        UserDefaults.standard.string(forKey: "VPhoneLastLocationTargetIP") ?? "8.8.8.8"
+    }
+
+    private func rememberLocationTargetIP(_ ip: String) {
+        UserDefaults.standard.set(ip, forKey: "VPhoneLastLocationTargetIP")
+    }
+
+    private func promptAppBundleID(
+        title: String,
+        message: String,
+        confirmTitle: String
+    ) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: confirmTitle)
+        alert.addButton(withTitle: "取消")
+
+        let field = NSTextField(string: defaultAppBundleID())
+        field.placeholderString = "例如 com.burbn.instagram"
+        field.frame = NSRect(x: 0, y: 0, width: 380, height: 24)
+        alert.accessoryView = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let bundleID = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !bundleID.isEmpty else { return nil }
+        return bundleID
+    }
+
+    private func promptAppBackupOptions() -> (bundleID: String, backupName: String)? {
+        let alert = NSAlert()
+        alert.messageText = "备份 App"
+        alert.informativeText = "输入要备份的 App Bundle ID 和备份名称。"
+        alert.addButton(withTitle: "备份")
+        alert.addButton(withTitle: "取消")
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.spacing = 8
+        // 4 arranged subviews + 3 spacings need more than 76pt; otherwise
+        // AppKit compresses the text fields and their text becomes invisible.
+        stack.frame = NSRect(x: 0, y: 0, width: 420, height: 118)
+
+        let bundleField = NSTextField(string: defaultAppBundleID())
+        bundleField.placeholderString = "例如 com.burbn.instagram"
+        let nameField = NSTextField(string: "manual")
+        nameField.placeholderString = "例如 before-login / clean-state"
+        bundleField.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        bundleField.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        nameField.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        nameField.heightAnchor.constraint(equalToConstant: 26).isActive = true
+
+        stack.addArrangedSubview(NSTextField(labelWithString: "Bundle ID"))
+        stack.addArrangedSubview(bundleField)
+        stack.addArrangedSubview(NSTextField(labelWithString: "备份名称"))
+        stack.addArrangedSubview(nameField)
+        alert.accessoryView = stack
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let bundleID = bundleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let backupName = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !bundleID.isEmpty else { return nil }
+        return (bundleID, backupName.isEmpty ? "manual" : backupName)
+    }
+
+    private func promptLocationTargetIP(
+        title: String,
+        message: String,
+        confirmTitle: String
+    ) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: confirmTitle)
+        alert.addButton(withTitle: "取消")
+
+        let field = NSTextField(string: defaultLocationTargetIP())
+        field.placeholderString = "例如 8.8.8.8"
+        field.frame = NSRect(x: 0, y: 0, width: 380, height: 26)
+        alert.accessoryView = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let ip = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ip.isEmpty else { return nil }
+        return ip
+    }
+
+    private func chooseAppBackupArchive(bundleID: String) -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        var types: [UTType] = []
+        for ext in ["gz", "tgz", "tar"] {
+            if let type = UTType(filenameExtension: ext) { types.append(type) }
+        }
+        if !types.isEmpty {
+            panel.allowedContentTypes = types
+        }
+        panel.prompt = "还原"
+        panel.message = "选择要还原的 \(bundleID) 备份包。"
+
+        if let projectRootURL {
+            let backupDir = projectRootURL
+                .appendingPathComponent("app_backups", isDirectory: true)
+                .appendingPathComponent(bundleID, isDirectory: true)
+            if FileManager.default.fileExists(atPath: backupDir.path) {
+                panel.directoryURL = backupDir
+            }
+        }
+
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     private func logsDirectoryURL(create: Bool) -> URL? {

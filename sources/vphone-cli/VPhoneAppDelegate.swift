@@ -162,6 +162,10 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
             menuController = mc
 
             wc.onInstallPackagePressed = { [weak mc] in mc?.installIPAFromDisk() }
+            wc.onAppBackupPressed = { [weak mc] in mc?.backupAppState() }
+            wc.onAppNewDevicePressed = { [weak mc] in mc?.newDeviceAppState() }
+            wc.onAppRestorePressed = { [weak mc] in mc?.restoreAppState() }
+            wc.onLocationByIPPressed = { [weak mc] in mc?.setLocationByIP() }
             wc.onImportPhotoPressed = { [weak mc] in mc?.importPhotoToAlbum() }
             wc.onTypeASCIIPressed = { [weak mc] in mc?.typeFromClipboard() }
             wc.onDeletePhotosPressed = { [weak mc] in mc?.deleteAllPhotosFromAlbum() }
@@ -186,6 +190,7 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
                 screenRecorder: recorder,
                 control: control,
                 keyHelper: keyHelper,
+                locationProvider: locationProvider,
                 screenWidth: options.screenWidth,
                 screenHeight: options.screenHeight,
                 showWindow: { [weak wc] in

@@ -37,6 +37,10 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
     private weak var connectionInfoToolbarItem: NSToolbarItem?
     private weak var homeSidebarButton: NSButton?
     private weak var installPackageSidebarButton: NSButton?
+    private weak var appBackupSidebarButton: NSButton?
+    private weak var appNewDeviceSidebarButton: NSButton?
+    private weak var appRestoreSidebarButton: NSButton?
+    private weak var locationByIPSidebarButton: NSButton?
     private weak var importPhotoSidebarButton: NSButton?
     private weak var typeASCIISidebarButton: NSButton?
     private weak var deletePhotosSidebarButton: NSButton?
@@ -47,6 +51,18 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
     private weak var connectionInfoSidebarButton: NSButton?
 
     var onInstallPackagePressed: (() -> Void)? {
+        didSet { refreshToolbarAvailability() }
+    }
+    var onAppBackupPressed: (() -> Void)? {
+        didSet { refreshToolbarAvailability() }
+    }
+    var onAppNewDevicePressed: (() -> Void)? {
+        didSet { refreshToolbarAvailability() }
+    }
+    var onAppRestorePressed: (() -> Void)? {
+        didSet { refreshToolbarAvailability() }
+    }
+    var onLocationByIPPressed: (() -> Void)? {
         didSet { refreshToolbarAvailability() }
     }
     var onImportPhotoPressed: (() -> Void)? {
@@ -197,6 +213,18 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
         installPackageSidebarButton = makeSidebarButton(
             title: "安装 IPA", symbolName: "square.and.arrow.down", action: #selector(installPackagePressed)
         )
+        appBackupSidebarButton = makeSidebarButton(
+            title: "备份 App", symbolName: "tray.and.arrow.down", action: #selector(appBackupPressed)
+        )
+        appNewDeviceSidebarButton = makeSidebarButton(
+            title: "一键新机", symbolName: "sparkles", action: #selector(appNewDevicePressed)
+        )
+        appRestoreSidebarButton = makeSidebarButton(
+            title: "还原 App", symbolName: "tray.and.arrow.up", action: #selector(appRestorePressed)
+        )
+        locationByIPSidebarButton = makeSidebarButton(
+            title: "按 IP 定位", symbolName: "mappin.and.ellipse", action: #selector(locationByIPPressed)
+        )
         importPhotoSidebarButton = makeSidebarButton(
             title: "导入图片", symbolName: "photo.on.rectangle", action: #selector(importPhotoPressed)
         )
@@ -229,6 +257,10 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
         [
             homeSidebarButton,
             installPackageSidebarButton,
+            appBackupSidebarButton,
+            appNewDeviceSidebarButton,
+            appRestoreSidebarButton,
+            locationByIPSidebarButton,
             importPhotoSidebarButton,
             typeASCIISidebarButton,
             deletePhotosSidebarButton,
@@ -482,6 +514,10 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
         homeSidebarButton?.isEnabled = guestConnected
         installPackageSidebarButton?.isEnabled =
             installPackageAvailable && onInstallPackagePressed != nil
+        appBackupSidebarButton?.isEnabled = onAppBackupPressed != nil
+        appNewDeviceSidebarButton?.isEnabled = onAppNewDevicePressed != nil
+        appRestoreSidebarButton?.isEnabled = onAppRestorePressed != nil
+        locationByIPSidebarButton?.isEnabled = guestConnected && onLocationByIPPressed != nil
         importPhotoSidebarButton?.isEnabled = onImportPhotoPressed != nil
         typeASCIISidebarButton?.isEnabled = onTypeASCIIPressed != nil
         deletePhotosSidebarButton?.isEnabled = onDeletePhotosPressed != nil
@@ -500,6 +536,22 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
 
     @objc private func installPackagePressed() {
         onInstallPackagePressed?()
+    }
+
+    @objc private func appBackupPressed() {
+        onAppBackupPressed?()
+    }
+
+    @objc private func appNewDevicePressed() {
+        onAppNewDevicePressed?()
+    }
+
+    @objc private func appRestorePressed() {
+        onAppRestorePressed?()
+    }
+
+    @objc private func locationByIPPressed() {
+        onLocationByIPPressed?()
     }
 
     @objc private func importPhotoPressed() {

@@ -61,7 +61,8 @@ fi
 [[ -n "${VPHONE_CYDIA_SOURCES:-}" ]] && export VPHONE_CYDIA_SOURCES VPHONE_APT_SOURCES="$VPHONE_CYDIA_SOURCES"
 
 INSTANCES_DIR="${VPHONE_INSTANCES_DIR:-${PROJECT_ROOT}/vm.instances}"
-REQUESTED_INSTANCE_NAME="${1:-${VPHONE_INSTANCE_NAME:-}}"
+CLI_INSTANCE_NAME="${1:-}"
+REQUESTED_INSTANCE_NAME="${CLI_INSTANCE_NAME:-${VPHONE_INSTANCE_NAME:-}}"
 CREATE_COUNT="${VPHONE_CREATE_COUNT:-1}"
 BATCH_STAMP=""
 INSTANCE_DIR=""
@@ -117,6 +118,54 @@ prompt_create_count() {
   normalize_create_count
 }
 
+prompt_instance_name() {
+  vphone_prompt_enabled || return 0
+  # Command-line instance name is explicit and should not be overwritten by the
+  # Finder-style interactive prompt. Finder double-clicks have no argv, so they
+  # can name a clean base VM here.
+  [[ -z "$CLI_INSTANCE_NAME" ]] || return 0
+
+  local value lower
+  print -r -- "=== 实例命名 ===" > /dev/tty
+  print -r -- "留空/输入 auto 使用自动名称；创建多个时这里会作为前缀并自动追加 -01/-02。" > /dev/tty
+  while true; do
+    value="$(vphone_prompt_read "实例名称/前缀" "${REQUESTED_INSTANCE_NAME:-auto}")"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    lower="${value:l}"
+    case "$lower" in
+      ""|auto|default|none|skip|no|0)
+        REQUESTED_INSTANCE_NAME=""
+        unset VPHONE_INSTANCE_NAME 2>/dev/null || true
+        break
+        ;;
+    esac
+    if [[ "$value" =~ '^[A-Za-z0-9_-]+$' ]]; then
+      REQUESTED_INSTANCE_NAME="$value"
+      VPHONE_INSTANCE_NAME="$value"
+      export VPHONE_INSTANCE_NAME
+      break
+    fi
+    print -r -- "实例名只能包含英文、数字、下划线和中划线：[A-Za-z0-9_-]" > /dev/tty
+  done
+  print -r -- "INSTANCE_NAME=${REQUESTED_INSTANCE_NAME:-auto}" > /dev/tty
+  print -r -- "" > /dev/tty
+}
+
+normalize_requested_instance_name() {
+  local value="${REQUESTED_INSTANCE_NAME:-}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  case "${value:l}" in
+    ""|auto|default|none|skip|no|0)
+      REQUESTED_INSTANCE_NAME=""
+      ;;
+    *)
+      REQUESTED_INSTANCE_NAME="$value"
+      ;;
+  esac
+}
+
 computed_instance_name() {
   local index="$1"
   local count="$2"
@@ -154,6 +203,7 @@ prepare_instance_plan() {
   local i name dir
   PLANNED_INSTANCE_NAMES=()
   PLANNED_INSTANCE_DIRS=()
+  normalize_requested_instance_name
   mkdir -p "$INSTANCES_DIR"
   BATCH_STAMP="$(date '+%Y%m%d-%H%M%S')"
 
@@ -320,11 +370,23 @@ set -euo pipefail
 cd "${PROJECT_ROOT}"
 
 print -r -- "[*] launching ${#CREATED_INSTANCE_DIRS[@]} vphone instances sequentially"
+delay_seconds="\${VPHONE_BATCH_LAUNCH_DELAY_SECONDS:-3}"
 LAUNCH
 
-  local dir
+  local dir index total
+  total="${#CREATED_INSTANCE_DIRS[@]}"
+  index=0
   for dir in "${CREATED_INSTANCE_DIRS[@]}"; do
+    index=$(( index + 1 ))
     printf 'zsh "%s/scripts/launch_vphone_instance.sh" "%s"\n' "$PROJECT_ROOT" "$dir" >> "$BATCH_LAUNCHER"
+    if (( index < total )); then
+      cat >> "$BATCH_LAUNCHER" <<'LAUNCH'
+if [[ "$delay_seconds" == <-> && "$delay_seconds" -gt 0 ]]; then
+  print -r -- "[*] cooldown ${delay_seconds}s before launching next instance"
+  sleep "$delay_seconds"
+fi
+LAUNCH
+    fi
   done
   chmod +x "$BATCH_LAUNCHER"
   ok "batch launcher written: ${BATCH_LAUNCHER}"
@@ -357,6 +419,7 @@ main() {
   ensure_single_creator
   vphone_setup_sudo_password 1
   vphone_prompt_runtime_config 1 1
+  prompt_instance_name
   prompt_create_count
   vphone_export_runtime_config
   prepare_instance_plan

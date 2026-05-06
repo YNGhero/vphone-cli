@@ -28,6 +28,28 @@ VPHONE_SSH_PASSWORD='你的密码' zsh scripts/app_backup.sh 2224 com.example.ap
 zsh scripts/app_backup.sh 2224 com.example.app before-login --instance-name phone-01
 ```
 
+## 通过 GUI 使用
+
+现在这三个动作也已经接入 GUI：
+
+- 多开管理器：右键实例卡片/列表行 -> `备份 App` / `一键新机` / `还原 App`
+- 实例窗口：右侧快捷栏 -> `备份 App` / `一键新机` / `还原 App`
+- 实例菜单栏：`实例管理` -> `备份 App...` / `一键新机...` / `还原 App...`
+
+使用条件：
+
+1. 目标实例需要已经启动，并且 `launch_gui.command` 已完成 SSH 转发。
+2. 如果提示“没有 SSH 本地端口”，先等待实例 ready，或检查实例目录里的 `connection_info.txt` / `instance.env`。
+3. Bundle ID 输入框会记住上一次输入；初始默认值是 `com.burbn.instagram`。
+4. GUI 触发后会在实例日志目录写入日志：
+
+```text
+vm.instances/<实例名>/logs/manager-actions.log
+vm.instances/<实例名>/logs/gui-actions.log
+```
+
+其中多开管理器动作写入 `manager-actions.log`，实例窗口/菜单动作写入 `gui-actions.log`。
+
 ## 1. 备份指定 App
 
 ```bash
