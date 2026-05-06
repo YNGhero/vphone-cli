@@ -166,6 +166,8 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
             wc.onAppNewDevicePressed = { [weak mc] in mc?.newDeviceAppState() }
             wc.onAppRestorePressed = { [weak mc] in mc?.restoreAppState() }
             wc.onLocationByIPPressed = { [weak mc] in mc?.setLocationByIP() }
+            wc.onSetProxyPressed = { [weak mc] in mc?.setInstanceProxy() }
+            wc.onClearProxyPressed = { [weak mc] in mc?.clearInstanceProxy() }
             wc.onImportPhotoPressed = { [weak mc] in mc?.importPhotoToAlbum() }
             wc.onTypeASCIIPressed = { [weak mc] in mc?.typeFromClipboard() }
             wc.onDeletePhotosPressed = { [weak mc] in mc?.deleteAllPhotosFromAlbum() }

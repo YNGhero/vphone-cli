@@ -36,6 +36,8 @@ final class VPhoneInstanceManager {
                 || record.vmURL.path.lowercased().contains(query)
                 || (record.udid?.lowercased().contains(query) ?? false)
                 || (record.ecid?.lowercased().contains(query) ?? false)
+                || (record.macAddress?.lowercased().contains(query) ?? false)
+                || (record.proxyURL?.lowercased().contains(query) ?? false)
         }
     }
 
@@ -54,6 +56,10 @@ final class VPhoneInstanceManager {
 
     var selectedDeletableRecords: [VPhoneInstanceRecord] {
         selectedRecords.filter(\.canDelete)
+    }
+
+    var selectedProxyCapableRecords: [VPhoneInstanceRecord] {
+        selectedRecords.filter(\.canUseSSHActions)
     }
 
     var isRunningAction: Bool {
@@ -182,6 +188,21 @@ final class VPhoneInstanceManager {
     func setLocationByIPSelected() {
         guard let record = selectedRecord else { return }
         setLocationByIP(record)
+    }
+
+    func setProxySelected() {
+        guard let record = selectedRecord else { return }
+        setProxy(record)
+    }
+
+    func clearProxySelected() {
+        guard let record = selectedRecord else { return }
+        clearProxy(record)
+    }
+
+    func testProxySelected() {
+        guard let record = selectedRecord else { return }
+        testProxy(record)
     }
 
     func installIPASelectedRecords() {
@@ -594,6 +615,49 @@ final class VPhoneInstanceManager {
             arguments: [record.vmURL.path, ip],
             environment: [:],
             title: "按 IP 定位",
+            record: record
+        )
+    }
+
+    func setProxy(_ record: VPhoneInstanceRecord) {
+        guard sshPort(for: record, title: "设置代理") != nil else { return }
+        guard let proxyURL = promptProxyURL(record: record) else { return }
+        rememberProxyURL(proxyURL)
+
+        runProjectScript(
+            relativePath: "scripts/set_instance_proxy.sh",
+            arguments: [record.vmURL.path, proxyURL, "--test"],
+            environment: [:],
+            title: "设置实例代理",
+            record: record
+        )
+    }
+
+    func clearProxy(_ record: VPhoneInstanceRecord) {
+        guard sshPort(for: record, title: "清除代理") != nil else { return }
+        guard confirm(
+            title: "清除代理",
+            message: "将清除 \(record.name) 的 guest SystemConfiguration HTTP/SOCKS 代理配置。继续？",
+            confirmTitle: "清除"
+        ) else { return }
+
+        runProjectScript(
+            relativePath: "scripts/set_instance_proxy.sh",
+            arguments: [record.vmURL.path, "clear", "--yes"],
+            environment: [:],
+            title: "清除实例代理",
+            record: record
+        )
+    }
+
+    func testProxy(_ record: VPhoneInstanceRecord) {
+        guard sshPort(for: record, title: "测试出口 IP") != nil else { return }
+
+        runProjectScript(
+            relativePath: "scripts/set_instance_proxy.sh",
+            arguments: [record.vmURL.path, "test"],
+            environment: [:],
+            title: "测试出口 IP",
             record: record
         )
     }
@@ -1121,6 +1185,18 @@ final class VPhoneInstanceManager {
         UserDefaults.standard.set(ip, forKey: "VPhoneLastLocationTargetIP")
     }
 
+    private func defaultProxyURL(for record: VPhoneInstanceRecord? = nil) -> String {
+        let current = record?.proxyURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let current, !current.isEmpty {
+            return current
+        }
+        return UserDefaults.standard.string(forKey: "VPhoneLastProxyURL") ?? "socks5://127.0.0.1:1080"
+    }
+
+    private func rememberProxyURL(_ proxyURL: String) {
+        UserDefaults.standard.set(proxyURL, forKey: "VPhoneLastProxyURL")
+    }
+
     private func batchLaunchDelaySeconds() -> Int {
         let raw = ProcessInfo.processInfo.environment["VPHONE_MANAGER_BATCH_LAUNCH_DELAY"]
             ?? ProcessInfo.processInfo.environment["VPHONE_BATCH_LAUNCH_DELAY_SECONDS"]
@@ -1211,6 +1287,24 @@ final class VPhoneInstanceManager {
         let ip = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !ip.isEmpty else { return nil }
         return ip
+    }
+
+    private func promptProxyURL(record: VPhoneInstanceRecord) -> String? {
+        let alert = NSAlert()
+        alert.messageText = "设置实例代理"
+        alert.informativeText = "输入 \(record.name) 要使用的 HTTP/SOCKS5 代理 URL。该配置写入 guest SystemConfiguration，适用于遵循系统代理的 App。"
+        alert.addButton(withTitle: "设置并测试")
+        alert.addButton(withTitle: "取消")
+
+        let field = NSTextField(string: defaultProxyURL(for: record))
+        field.placeholderString = "例如 socks5://user:pass@1.2.3.4:1080"
+        field.frame = NSRect(x: 0, y: 0, width: 460, height: 26)
+        alert.accessoryView = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let proxyURL = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !proxyURL.isEmpty else { return nil }
+        return proxyURL
     }
 
     private func promptText(

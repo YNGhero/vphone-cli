@@ -53,7 +53,9 @@ if [[ -f "$ENV_FILE" ]]; then
     VPHONE_VARIANT \
     VPHONE_LANGUAGE VPHONE_LOCALE VPHONE_LANGUAGE_RESPRING \
     VPHONE_NETWORK_MODE VPHONE_NETWORK_INTERFACE NETWORK_MODE NETWORK_INTERFACE \
-    VPHONE_CYDIA_SOURCES VPHONE_APT_SOURCES
+    VPHONE_MAC_ADDRESS MAC_ADDRESS \
+    VPHONE_CYDIA_SOURCES VPHONE_APT_SOURCES \
+    VPHONE_PROXY_URL VPHONE_PROXY_MODE VPHONE_PROXY_HOST VPHONE_PROXY_PORT
 fi
 INSTANCE_NAME="${VM_DIR_ABS:t}"
 if [[ -z "${NETWORK_MODE:-}" && -n "${VPHONE_NETWORK_MODE:-}" ]]; then
@@ -61,6 +63,9 @@ if [[ -z "${NETWORK_MODE:-}" && -n "${VPHONE_NETWORK_MODE:-}" ]]; then
 fi
 if [[ -z "${NETWORK_INTERFACE:-}" && -n "${VPHONE_NETWORK_INTERFACE:-}" ]]; then
   NETWORK_INTERFACE="$VPHONE_NETWORK_INTERFACE"
+fi
+if [[ -z "${VPHONE_MAC_ADDRESS:-}" && -n "${MAC_ADDRESS:-}" ]]; then
+  VPHONE_MAC_ADDRESS="$MAC_ADDRESS"
 fi
 if [[ -z "${VPHONE_VARIANT:-}" && -f "${VM_DIR_ABS}/.vphone_variant" ]]; then
   VPHONE_VARIANT="$(< "${VM_DIR_ABS}/.vphone_variant")"
@@ -297,8 +302,13 @@ VPHONE_NETWORK_INTERFACE="${NETWORK_INTERFACE:-${VPHONE_NETWORK_INTERFACE:-}}"
 NETWORK_MODE="${NETWORK_MODE:-${VPHONE_NETWORK_MODE:-}}"
 NETWORK_INTERFACE="${NETWORK_INTERFACE:-${VPHONE_NETWORK_INTERFACE:-}}"
 ENV
+  [[ -n "${VPHONE_MAC_ADDRESS:-}" ]] && printf 'VPHONE_MAC_ADDRESS=%q\n' "${VPHONE_MAC_ADDRESS}" >> "$ENV_FILE"
   printf 'VPHONE_CYDIA_SOURCES=%q\n' "${VPHONE_CYDIA_SOURCES:-}" >> "$ENV_FILE"
   printf 'VPHONE_APT_SOURCES=%q\n' "${VPHONE_APT_SOURCES:-${VPHONE_CYDIA_SOURCES:-}}" >> "$ENV_FILE"
+  [[ -n "${VPHONE_PROXY_URL:-}" ]] && printf 'VPHONE_PROXY_URL=%q\n' "${VPHONE_PROXY_URL}" >> "$ENV_FILE"
+  [[ -n "${VPHONE_PROXY_MODE:-}" ]] && printf 'VPHONE_PROXY_MODE=%q\n' "${VPHONE_PROXY_MODE}" >> "$ENV_FILE"
+  [[ -n "${VPHONE_PROXY_HOST:-}" ]] && printf 'VPHONE_PROXY_HOST=%q\n' "${VPHONE_PROXY_HOST}" >> "$ENV_FILE"
+  [[ -n "${VPHONE_PROXY_PORT:-}" ]] && printf 'VPHONE_PROXY_PORT=%q\n' "${VPHONE_PROXY_PORT}" >> "$ENV_FILE"
 }
 
 pid_owns_instance_path() {
@@ -609,7 +619,7 @@ EOF
 main() {
   ensure_single_launcher
   load_or_allocate_ports
-  vphone_vm_apply_network_config "${VM_DIR_ABS}/config.plist" "${NETWORK_MODE:-${VPHONE_NETWORK_MODE:-}}" "${NETWORK_INTERFACE:-${VPHONE_NETWORK_INTERFACE:-}}" \
+  vphone_vm_apply_network_config "${VM_DIR_ABS}/config.plist" "${NETWORK_MODE:-${VPHONE_NETWORK_MODE:-}}" "${NETWORK_INTERFACE:-${VPHONE_NETWORK_INTERFACE:-}}" "${VPHONE_MAC_ADDRESS:-${MAC_ADDRESS:-}}" \
     || die "failed to update VM network config"
   vphone_host_ensure_amfidont "$PROJECT_ROOT" || true
   boot_vm_if_needed

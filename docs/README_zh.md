@@ -142,7 +142,15 @@ make boot
 - `bridged`：桥接到宿主机指定网卡，例如 `NETWORK_INTERFACE=en0`。
 - `none`：不挂载虚拟网卡，适合离线/隔离测试。
 
-> **注意：** 网络模式决定虚拟网卡接入方式，不等同于“不同公网 IP/不同地区代理”。如果需要按实例分配代理或出口 IP，需要额外在 guest 或宿主机路由层配置。
+每个实例会在 `config.plist` 中保存一个独立、持久的虚拟网卡 MAC：
+
+```text
+networkConfig.macAddress = 02:xx:xx:xx:xx:xx
+```
+
+克隆实例时会重新生成 MAC；老实例如果该字段为空，首次用新版 GUI 启动时会自动补写。
+
+> **注意：** 网络模式决定虚拟网卡接入方式，不等同于“不同公网 IP/不同地区代理”。如果需要按实例分配代理或出口 IP，可以先使用第一阶段的 guest 系统代理脚本，见 `docs/NETWORK_PROXY_AUTOMATION_zh.md`。
 
 ## 恢复过程
 
@@ -700,6 +708,13 @@ VNC: 5901+
 RPC: 5910+
 ```
 
+如果实例已配置固定/持久 MAC 或 guest 代理，多开管理器和连接信息里也会显示：
+
+```text
+MAC: 02:xx:xx:xx:xx:xx
+Proxy: socks5://host:1080
+```
+
 ### 实现要点
 
 - `scripts/create_trollstore_instance.sh` 负责创建新实例，内部通过 `VM_DIR=<实例目录>` 调用 `scripts/setup_machine.sh --jb`。
@@ -717,7 +732,8 @@ RPC: 5910+
   ```
 
 - `machineIdentifier` 在新 VM 第一次启动时生成并写入 `config.plist`，因此每个实例会获得独立 ECID/UDID。
-- `networkConfig.mode` 保存在每个实例自己的 `config.plist` 中；`nat` 为默认，`bridged` 需要指定可桥接网卡，`none` 为离线。
+- `networkConfig.mode` 和 `networkConfig.macAddress` 保存在每个实例自己的 `config.plist` 中；`nat` 为默认，`bridged` 需要指定可桥接网卡，`none` 为离线。
+- `scripts/set_instance_proxy.sh` 可给已启动实例写入 HTTP/SOCKS5 系统代理，并把 `VPHONE_PROXY_*` 写回该实例的 `instance.env`；多开管理器右键菜单也已接入“设置代理/清除代理/测试出口 IP”。
 - 语言设置写入 guest 的 `/var/mobile/Library/Preferences/.GlobalPreferences.plist` 和 `/var/root/Library/Preferences/.GlobalPreferences.plist`，并记录 marker，避免每次启动重复重启 SpringBoard。
 - 多开实例存放在 `vm.instances/`，该目录已加入 `.gitignore`，不会进入版本控制。
 - 创建流程使用 `.multi_create_trollstore.lock` 防止同时执行多个“刷机/创建”流程；**创建新实例请串行执行**。

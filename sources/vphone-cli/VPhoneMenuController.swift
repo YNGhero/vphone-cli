@@ -28,6 +28,9 @@ class VPhoneMenuController {
     var instanceAppRestoreItem: NSMenuItem?
     var instanceImportPhotoItem: NSMenuItem?
     var instanceDeletePhotosItem: NSMenuItem?
+    var instanceSetProxyItem: NSMenuItem?
+    var instanceClearProxyItem: NSMenuItem?
+    var instanceTestProxyItem: NSMenuItem?
     var instanceRebootItem: NSMenuItem?
     var instanceRespringItem: NSMenuItem?
     var instanceConnectionInfoItem: NSMenuItem?

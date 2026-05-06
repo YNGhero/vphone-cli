@@ -37,6 +37,8 @@ struct VPhoneInstanceRecord: Identifiable, Hashable {
     let locale: String?
     let networkMode: String?
     let networkInterface: String?
+    let macAddress: String?
+    let proxyURL: String?
     let createdAt: String?
     let bootPID: Int32?
     let socketExists: Bool
@@ -101,6 +103,14 @@ struct VPhoneInstanceRecord: Identifiable, Hashable {
         return iface.isEmpty ? mode : "\(mode) (\(iface))"
     }
 
+    var displayMAC: String {
+        clean(macAddress).isEmpty ? "-" : clean(macAddress)
+    }
+
+    var displayProxy: String {
+        clean(proxyURL).isEmpty ? "未设置" : clean(proxyURL)
+    }
+
     var displayCPU: String {
         cpuCount.map(String.init) ?? "-"
     }
@@ -159,6 +169,8 @@ struct VPhoneInstanceRecord: Identifiable, Hashable {
         lines.append("  Language: \(displayLanguage)")
         lines.append("  Locale: \(displayLocale)")
         lines.append("  Network: \(displayNetwork)")
+        lines.append("  MAC: \(displayMAC)")
+        lines.append("  Proxy: \(displayProxy)")
         return lines.joined(separator: "\n")
     }
 

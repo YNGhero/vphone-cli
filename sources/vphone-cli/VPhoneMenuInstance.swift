@@ -55,6 +55,20 @@ extension VPhoneMenuController {
 
         menu.addItem(NSMenuItem.separator())
 
+        let setProxy = makeItem(VPhoneMenuText.Instance.setProxy, action: #selector(setInstanceProxy))
+        instanceSetProxyItem = setProxy
+        menu.addItem(setProxy)
+
+        let clearProxy = makeItem(VPhoneMenuText.Instance.clearProxy, action: #selector(clearInstanceProxy))
+        instanceClearProxyItem = clearProxy
+        menu.addItem(clearProxy)
+
+        let testProxy = makeItem(VPhoneMenuText.Instance.testProxy, action: #selector(testInstanceProxy))
+        instanceTestProxyItem = testProxy
+        menu.addItem(testProxy)
+
+        menu.addItem(NSMenuItem.separator())
+
         let reboot = makeItem(VPhoneMenuText.Instance.reboot, action: #selector(rebootGuest))
         instanceRebootItem = reboot
         menu.addItem(reboot)
@@ -278,6 +292,76 @@ extension VPhoneMenuController {
         )
     }
 
+    @objc func setInstanceProxy() {
+        guard sshLocalPort() != nil else {
+            showAlert(
+                title: "设置实例代理",
+                message: "没有找到 SSH 本地端口。请先启动实例并确认 connection_info.txt 已生成。",
+                style: .warning
+            )
+            return
+        }
+        guard let vmDirectoryURL else {
+            showAlert(title: "设置实例代理", message: "当前实例目录未知。", style: .warning)
+            return
+        }
+        guard let proxyURL = promptProxyURL() else { return }
+        rememberProxyURL(proxyURL)
+
+        launchProjectScript(
+            relativePath: "scripts/set_instance_proxy.sh",
+            arguments: [vmDirectoryURL.path, proxyURL, "--test"],
+            title: "设置实例代理"
+        )
+    }
+
+    @objc func clearInstanceProxy() {
+        guard sshLocalPort() != nil else {
+            showAlert(
+                title: "清除实例代理",
+                message: "没有找到 SSH 本地端口。请先启动实例并确认 connection_info.txt 已生成。",
+                style: .warning
+            )
+            return
+        }
+        guard let vmDirectoryURL else {
+            showAlert(title: "清除实例代理", message: "当前实例目录未知。", style: .warning)
+            return
+        }
+        guard confirmDestructive(
+            title: "清除实例代理",
+            message: "将清除当前实例的 guest SystemConfiguration HTTP/SOCKS 代理配置。继续？",
+            confirmTitle: "清除"
+        ) else { return }
+
+        launchProjectScript(
+            relativePath: "scripts/set_instance_proxy.sh",
+            arguments: [vmDirectoryURL.path, "clear", "--yes"],
+            title: "清除实例代理"
+        )
+    }
+
+    @objc func testInstanceProxy() {
+        guard sshLocalPort() != nil else {
+            showAlert(
+                title: "测试出口 IP",
+                message: "没有找到 SSH 本地端口。请先启动实例并确认 connection_info.txt 已生成。",
+                style: .warning
+            )
+            return
+        }
+        guard let vmDirectoryURL else {
+            showAlert(title: "测试出口 IP", message: "当前实例目录未知。", style: .warning)
+            return
+        }
+
+        launchProjectScript(
+            relativePath: "scripts/set_instance_proxy.sh",
+            arguments: [vmDirectoryURL.path, "test"],
+            title: "测试出口 IP"
+        )
+    }
+
     @objc func rebootGuest() {
         guard let port = sshLocalPort() else {
             showAlert(
@@ -411,6 +495,9 @@ extension VPhoneMenuController {
             if let rpc = instanceEnvValue("RPC_LOCAL_PORT"), !rpc.isEmpty {
                 generated.append("RPC: 127.0.0.1:\(rpc)")
             }
+            if let proxy = instanceEnvValue("VPHONE_PROXY_URL"), !proxy.isEmpty {
+                generated.append("Proxy: \(proxy)")
+            }
             sections.append(generated.joined(separator: "\n"))
         }
 
@@ -491,6 +578,17 @@ extension VPhoneMenuController {
         UserDefaults.standard.set(ip, forKey: "VPhoneLastLocationTargetIP")
     }
 
+    private func defaultProxyURL() -> String {
+        if let current = instanceEnvValue("VPHONE_PROXY_URL"), !current.isEmpty {
+            return current
+        }
+        return UserDefaults.standard.string(forKey: "VPhoneLastProxyURL") ?? "socks5://127.0.0.1:1080"
+    }
+
+    private func rememberProxyURL(_ proxyURL: String) {
+        UserDefaults.standard.set(proxyURL, forKey: "VPhoneLastProxyURL")
+    }
+
     private func promptAppBundleID(
         title: String,
         message: String,
@@ -569,6 +667,24 @@ extension VPhoneMenuController {
         let ip = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !ip.isEmpty else { return nil }
         return ip
+    }
+
+    private func promptProxyURL() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "设置实例代理"
+        alert.informativeText = "输入当前实例要使用的 HTTP/SOCKS5 代理 URL。该配置写入 guest SystemConfiguration，适用于遵循系统代理的 App。"
+        alert.addButton(withTitle: "设置并测试")
+        alert.addButton(withTitle: "取消")
+
+        let field = NSTextField(string: defaultProxyURL())
+        field.placeholderString = "例如 socks5://user:pass@1.2.3.4:1080"
+        field.frame = NSRect(x: 0, y: 0, width: 460, height: 26)
+        alert.accessoryView = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let proxyURL = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !proxyURL.isEmpty else { return nil }
+        return proxyURL
     }
 
     private func chooseAppBackupArchive(bundleID: String) -> URL? {

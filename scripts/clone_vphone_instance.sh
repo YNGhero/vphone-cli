@@ -21,6 +21,7 @@ if [[ -f "$ENV_CONFIG" ]]; then
     VPHONE_AUTO_LAUNCH_CLONED VPHONE_INTERACTIVE_CONFIG \
     VPHONE_VARIANT VPHONE_LANGUAGE VPHONE_LOCALE VPHONE_LANGUAGE_RESPRING \
     VPHONE_NETWORK_MODE VPHONE_NETWORK_INTERFACE NETWORK_MODE NETWORK_INTERFACE \
+    VPHONE_MAC_ADDRESS MAC_ADDRESS \
     VPHONE_CYDIA_SOURCES VPHONE_APT_SOURCES
 fi
 LOCAL_CONFIG="${PROJECT_ROOT}/vphone_instance.conf"
@@ -30,6 +31,7 @@ if [[ -f "$LOCAL_CONFIG" ]]; then
     VPHONE_AUTO_LAUNCH_CLONED VPHONE_INTERACTIVE_CONFIG \
     VPHONE_VARIANT VPHONE_LANGUAGE VPHONE_LOCALE VPHONE_LANGUAGE_RESPRING \
     VPHONE_NETWORK_MODE VPHONE_NETWORK_INTERFACE NETWORK_MODE NETWORK_INTERFACE \
+    VPHONE_MAC_ADDRESS MAC_ADDRESS \
     VPHONE_CYDIA_SOURCES VPHONE_APT_SOURCES
 fi
 
@@ -230,15 +232,23 @@ reset_target_machine_identifier() {
   /usr/bin/python3 - "${target_dir}/config.plist" <<'PY'
 from __future__ import annotations
 import plistlib
+import secrets
 import sys
 from pathlib import Path
+
+
+def random_local_mac() -> str:
+    return "02:" + ":".join(f"{b:02x}" for b in secrets.token_bytes(5))
 
 path = Path(sys.argv[1])
 with path.open("rb") as f:
     manifest = plistlib.load(f)
 manifest["machineIdentifier"] = b""
+network = manifest.setdefault("networkConfig", {})
+network["macAddress"] = random_local_mac()
 with path.open("wb") as f:
     plistlib.dump(manifest, f, sort_keys=False)
+print(f"reset machineIdentifier and network MAC={network['macAddress']}")
 PY
   plutil -lint "${target_dir}/config.plist" >/dev/null
 }
@@ -349,6 +359,7 @@ clone_one() {
     print -r -- "source=${SOURCE_DIR}"
     print -r -- "cloned_at=$(date '+%F %T')"
     print -r -- "machineIdentifier=cleared; regenerated on first boot"
+    print -r -- "networkConfig.macAddress=regenerated"
   } > "${target_dir}/.cloned_from"
 
   write_instance_launcher "$target_dir" "$name"

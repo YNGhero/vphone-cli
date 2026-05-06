@@ -176,6 +176,14 @@ struct VPhoneInstanceListView: View {
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    Text("MAC \(record.displayMAC)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text("Proxy \(record.displayProxy)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
             .width(min: 130, ideal: 160)
@@ -200,6 +208,13 @@ struct VPhoneInstanceListView: View {
                 .disabled(model.selectedRecord?.canUseSSHActions != true)
             Button("按 IP 定位") { model.setLocationByIPSelected() }
                 .disabled(model.selectedRecord?.canUseHostControlActions != true)
+            Divider()
+            Button("设置代理...") { model.setProxySelected() }
+                .disabled(model.selectedRecord?.canUseSSHActions != true)
+            Button("清除代理") { model.clearProxySelected() }
+                .disabled(model.selectedRecord?.canUseSSHActions != true)
+            Button("测试出口 IP") { model.testProxySelected() }
+                .disabled(model.selectedRecord?.canUseSSHActions != true)
             Divider()
             Button("连接信息") { model.showSelectedConnectionInfo() }
             Button("复制 UDID/ECID") { model.copySelectedIdentity() }

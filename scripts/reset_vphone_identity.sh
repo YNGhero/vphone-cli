@@ -1,8 +1,9 @@
 #!/bin/zsh
 # reset_vphone_identity.sh — reset host-side vphone ECID/UDID identity for a stopped VM.
 #
-# This clears config.plist:machineIdentifier. On next boot, vphone-cli creates
-# a fresh VZMacMachineIdentifier, which changes the predicted ECID/UDID.
+# This clears config.plist:machineIdentifier and regenerates networkConfig.macAddress.
+# On next boot, vphone-cli creates a fresh VZMacMachineIdentifier, which changes
+# the predicted ECID/UDID, while the VM also gets a new stable virtual NIC MAC.
 # Guest user data is intentionally left untouched.
 
 set -euo pipefail
@@ -26,6 +27,7 @@ Effect:
   - requires the VM to be stopped
   - backs up config.plist
   - clears config.plist machineIdentifier
+  - regenerates config.plist networkConfig.macAddress
   - removes stale host-side identity/connection files
   - does NOT modify Disk.img user data or SEPStorage
 USAGE
@@ -86,7 +88,7 @@ fi
 if (( YES == 0 )); then
   print -r -- "将重置这个实例的 ECID/UDID 身份：" > /dev/tty
   print -r -- "  ${VM_DIR}" > /dev/tty
-  print -r -- "不会修改 Disk.img 用户数据，也不会重置 SEPStorage。" > /dev/tty
+  print -r -- "会清空 machineIdentifier 并重新生成虚拟网卡 MAC；不会修改 Disk.img 用户数据，也不会重置 SEPStorage。" > /dev/tty
   printf "继续？输入 yes: " > /dev/tty
   answer=""
   IFS= read -r answer < /dev/tty || answer=""
@@ -101,17 +103,25 @@ ok "backup: ${BACKUP}"
 /usr/bin/python3 - "$CONFIG" <<'PY'
 from __future__ import annotations
 import plistlib
+import secrets
 import sys
 from pathlib import Path
+
+
+def random_local_mac() -> str:
+    return "02:" + ":".join(f"{b:02x}" for b in secrets.token_bytes(5))
 
 path = Path(sys.argv[1])
 with path.open("rb") as f:
     manifest = plistlib.load(f)
 old_len = len(manifest.get("machineIdentifier", b"") or b"")
+old_mac = (manifest.get("networkConfig", {}) or {}).get("macAddress", "")
 manifest["machineIdentifier"] = b""
+network = manifest.setdefault("networkConfig", {})
+network["macAddress"] = random_local_mac()
 with path.open("wb") as f:
     plistlib.dump(manifest, f, sort_keys=False)
-print(f"cleared machineIdentifier; old_length={old_len}")
+print(f"cleared machineIdentifier; old_length={old_len}; old_mac={old_mac}; new_mac={network['macAddress']}")
 PY
 
 plutil -lint "$CONFIG" >/dev/null

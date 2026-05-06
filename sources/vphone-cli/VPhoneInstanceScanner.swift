@@ -83,6 +83,8 @@ enum VPhoneInstanceScanner {
             locale: clean(env["VPHONE_LOCALE"]).nilIfEmpty,
             networkMode: clean(env["NETWORK_MODE"] ?? env["VPHONE_NETWORK_MODE"] ?? networkConfig?["mode"] as? String).nilIfEmpty,
             networkInterface: clean(env["NETWORK_INTERFACE"] ?? env["VPHONE_NETWORK_INTERFACE"] ?? networkConfig?["bridgedInterface"] as? String).nilIfEmpty,
+            macAddress: clean(env["VPHONE_MAC_ADDRESS"] ?? env["MAC_ADDRESS"] ?? networkConfig?["macAddress"] as? String).nilIfEmpty,
+            proxyURL: clean(env["VPHONE_PROXY_URL"]).nilIfEmpty,
             createdAt: readFirstLine(vmURL.appendingPathComponent(".created_at")),
             bootPID: bootPID,
             socketExists: socketExists

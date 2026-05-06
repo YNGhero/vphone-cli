@@ -478,6 +478,8 @@ struct VPhoneInstanceCardView: View {
         VStack(spacing: 6) {
             infoRow("规格", "\(record.displayCPU)C / \(record.displayMemory) / \(record.displayDisk)")
             infoRow("网络", record.displayNetwork)
+            infoRow("MAC", record.displayMAC)
+            infoRow("代理", record.displayProxy)
             infoRow("UDID", record.udid ?? "-")
             infoRow("ECID", record.ecid ?? "-")
         }
@@ -554,6 +556,13 @@ struct VPhoneInstanceCardView: View {
             .disabled(!record.canUseHostControlActions)
         Button("按 IP 定位") { model.setLocationByIP(record) }
             .disabled(!record.canUseHostControlActions)
+        Divider()
+        Button("设置代理...") { model.setProxy(record) }
+            .disabled(!record.canUseSSHActions)
+        Button("清除代理") { model.clearProxy(record) }
+            .disabled(!record.canUseSSHActions)
+        Button("测试出口 IP") { model.testProxy(record) }
+            .disabled(!record.canUseSSHActions)
         Divider()
         Button("一键重启") { model.reboot(record) }
             .disabled(!record.canUseSSHActions)

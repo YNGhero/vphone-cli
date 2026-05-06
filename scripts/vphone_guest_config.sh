@@ -444,6 +444,9 @@ vphone_export_runtime_config() {
   if [[ -z "${VPHONE_APT_SOURCES:-}" && -n "${VPHONE_CYDIA_SOURCES:-}" ]]; then
     VPHONE_APT_SOURCES="$VPHONE_CYDIA_SOURCES"
   fi
+  if [[ -z "${VPHONE_MAC_ADDRESS:-}" && -n "${MAC_ADDRESS:-}" ]]; then
+    VPHONE_MAC_ADDRESS="$MAC_ADDRESS"
+  fi
   VPHONE_VARIANT="$(vphone_variant_normalize "${VPHONE_VARIANT:-jb}")"
   if [[ -n "${MEMORY_GB:-}" && "$MEMORY_GB" == <-> ]] && (( MEMORY_GB > 0 )); then
     MEMORY=$(( MEMORY_GB * 1024 ))
@@ -461,6 +464,7 @@ vphone_export_runtime_config() {
   [[ -n "${VPHONE_LANGUAGE_RESPRING:-}" ]] && export VPHONE_LANGUAGE_RESPRING
   [[ -n "${NETWORK_MODE:-}" ]] && export NETWORK_MODE VPHONE_NETWORK_MODE="$NETWORK_MODE"
   [[ -n "${NETWORK_INTERFACE:-}" ]] && export NETWORK_INTERFACE VPHONE_NETWORK_INTERFACE="$NETWORK_INTERFACE"
+  [[ -n "${VPHONE_MAC_ADDRESS:-}" ]] && export VPHONE_MAC_ADDRESS
   [[ -n "${VPHONE_CYDIA_SOURCES:-}" ]] && export VPHONE_CYDIA_SOURCES VPHONE_APT_SOURCES="$VPHONE_CYDIA_SOURCES"
   return 0
 }
@@ -649,8 +653,9 @@ vphone_vm_apply_network_config() {
   local config_path="$1"
   local mode="${2:-}"
   local interface="${3:-}"
+  local mac_address="${4:-${VPHONE_MAC_ADDRESS:-${MAC_ADDRESS:-}}}"
 
-  [[ -n "$mode" || -n "$interface" ]] || return 0
+  [[ -n "$mode" || -n "$interface" || -n "$mac_address" ]] || return 0
   [[ -n "$mode" ]] || mode="bridged"
 
   case "$mode" in
@@ -661,16 +666,39 @@ vphone_vm_apply_network_config() {
       ;;
   esac
 
-  /usr/bin/python3 - "$config_path" "$mode" "$interface" <<'PY'
+  /usr/bin/python3 - "$config_path" "$mode" "$interface" "$mac_address" <<'PY'
 from __future__ import annotations
 
 import plistlib
+import secrets
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 mode = sys.argv[2]
 interface = sys.argv[3]
+requested_mac = sys.argv[4]
+
+
+def random_local_mac() -> str:
+    return "02:" + ":".join(f"{b:02x}" for b in secrets.token_bytes(5))
+
+
+def normalize_mac(value: str) -> str:
+    text = (value or "").strip().lower().replace("-", ":")
+    parts = text.split(":")
+    if len(parts) != 6:
+        raise ValueError(f"invalid MAC address: {value}")
+    nums = []
+    for part in parts:
+        if len(part) != 2:
+            raise ValueError(f"invalid MAC address: {value}")
+        nums.append(int(part, 16))
+    if nums[0] & 1:
+        raise ValueError(f"multicast MAC is not valid for a VM: {value}")
+    nums[0] |= 0x02
+    nums[0] &= 0xFE
+    return ":".join(f"{n:02x}" for n in nums)
 
 with path.open("rb") as f:
     manifest = plistlib.load(f)
@@ -678,24 +706,32 @@ with path.open("rb") as f:
 network = manifest.setdefault("networkConfig", {})
 old_mode = network.get("mode")
 old_interface = network.get("bridgedInterface", "")
+old_mac = network.get("macAddress", "")
 
 network["mode"] = mode
-network.setdefault("macAddress", "")
+if requested_mac:
+    network["macAddress"] = normalize_mac(requested_mac)
+elif not network.get("macAddress"):
+    network["macAddress"] = random_local_mac()
 if interface:
     network["bridgedInterface"] = interface
 elif mode != "bridged":
     network.pop("bridgedInterface", None)
 
-changed = old_mode != network.get("mode") or old_interface != network.get("bridgedInterface", "")
+changed = (
+    old_mode != network.get("mode")
+    or old_interface != network.get("bridgedInterface", "")
+    or old_mac != network.get("macAddress", "")
+)
 
 with path.open("wb") as f:
     plistlib.dump(manifest, f)
 
 if changed:
     suffix = f" ({network['bridgedInterface']})" if network.get("bridgedInterface") else ""
-    print(f"[+] updated VM network config: {mode}{suffix}")
+    print(f"[+] updated VM network config: {mode}{suffix}, mac={network.get('macAddress', '')}")
 else:
     suffix = f" ({network['bridgedInterface']})" if network.get("bridgedInterface") else ""
-    print(f"[*] VM network config already: {mode}{suffix}")
+    print(f"[*] VM network config already: {mode}{suffix}, mac={network.get('macAddress', '')}")
 PY
 }

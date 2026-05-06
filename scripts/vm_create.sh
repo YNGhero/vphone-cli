@@ -23,6 +23,7 @@ CPU_COUNT="${CPU:-8}"
 MEMORY_MB="${MEMORY:-8192}"
 NETWORK_MODE="${NETWORK_MODE:-nat}"
 NETWORK_INTERFACE="${NETWORK_INTERFACE:-}"
+VPHONE_MAC_ADDRESS="${VPHONE_MAC_ADDRESS:-${MAC_ADDRESS:-}}"
 SEP_STORAGE_SIZE=$((512 * 1024)) # 512 KB (same as vrevm)
 
 # Script directory
@@ -52,6 +53,10 @@ while [[ $# -gt 0 ]]; do
             NETWORK_INTERFACE="$2"
             shift 2
             ;;
+        --mac-address)
+            VPHONE_MAC_ADDRESS="$2"
+            shift 2
+            ;;
         --rom)
             ROM_SRC="$2"
             shift 2
@@ -61,13 +66,14 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h | --help)
-            echo "Usage: $0 [--dir VM] [--disk-size 64] [--network-mode nat|bridged|none] [--network-interface en0] [--rom path] [--seprom path]"
+            echo "Usage: $0 [--dir VM] [--disk-size 64] [--network-mode nat|bridged|none] [--network-interface en0] [--mac-address 02:xx:xx:xx:xx:xx] [--rom path] [--seprom path]"
             echo ""
             echo "Options:"
             echo "  --dir       VM directory name (default: VM)"
             echo "  --disk-size Disk image size in GB (default: 64)"
             echo "  --network-mode Network mode: nat, bridged, none (default: nat)"
             echo "  --network-interface BSD interface for bridged mode, e.g. en0"
+            echo "  --mac-address Stable virtual NIC MAC; empty means auto-generate"
             echo "  --rom       Path to AVPBooter ROM (default: framework built-in)"
             echo "  --seprom    Path to AVPSEPBooter ROM (default: framework built-in)"
             exit 0
@@ -176,6 +182,7 @@ manifest_args=(
     --network-mode "${NETWORK_MODE}"
 )
 [[ -n "$NETWORK_INTERFACE" ]] && manifest_args+=(--network-interface "${NETWORK_INTERFACE}")
+[[ -n "$VPHONE_MAC_ADDRESS" ]] && manifest_args+=(--mac-address "${VPHONE_MAC_ADDRESS}")
 
 "${SCRIPT_DIR}/vm_manifest.py" "${manifest_args[@]}" || {
     echo "ERROR: Failed to generate VM manifest"

@@ -1,5 +1,6 @@
 import Dynamic
 import Foundation
+import Security
 import Virtualization
 
 /// Minimal VM for booting a vphone (virtual iPhone) in DFU mode.
@@ -48,6 +49,14 @@ class VPhoneVirtualMachine: NSObject, VZVirtualMachineDelegate {
         for manifest: VPhoneVirtualMachineManifest
     ) throws -> [VZNetworkDeviceConfiguration] {
         let net = VZVirtioNetworkDeviceConfiguration()
+        let macAddress = manifest.networkConfig.macAddress
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !macAddress.isEmpty, let mac = VZMACAddress(string: macAddress) {
+            net.macAddress = mac
+            print("[vphone] Network MAC: \(mac.string)")
+        } else if !macAddress.isEmpty {
+            print("[vphone] Warning: ignoring invalid configured MAC: \(macAddress)")
+        }
 
         switch manifest.networkConfig.mode {
         case .nat:
@@ -86,6 +95,70 @@ class VPhoneVirtualMachine: NSObject, VZVirtualMachineDelegate {
             print("[vphone] Network: hostOnly requested but not implemented; disabled")
             return []
         }
+    }
+
+    private static func randomLocalMACAddress() -> String {
+        var bytes = [UInt8](repeating: 0, count: 6)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        bytes[0] = (bytes[0] | 0x02) & 0xFE
+        return bytes.map { String(format: "%02x", $0) }.joined(separator: ":")
+    }
+
+    private static func normalizedMACAddress(_ value: String) -> String? {
+        let text = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: ":")
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 6 else { return nil }
+        var bytes: [UInt8] = []
+        for part in parts {
+            guard part.count == 2, let byte = UInt8(part, radix: 16) else { return nil }
+            bytes.append(byte)
+        }
+        guard (bytes[0] & 0x01) == 0 else { return nil }
+        bytes[0] = (bytes[0] | 0x02) & 0xFE
+        return bytes.map { String(format: "%02x", $0) }.joined(separator: ":")
+    }
+
+    private static func withNetworkConfig(
+        _ manifest: VPhoneVirtualMachineManifest,
+        networkConfig: VPhoneVirtualMachineManifest.NetworkConfig
+    ) -> VPhoneVirtualMachineManifest {
+        VPhoneVirtualMachineManifest(
+            platformType: manifest.platformType,
+            platformFusing: manifest.platformFusing,
+            machineIdentifier: manifest.machineIdentifier,
+            cpuCount: manifest.cpuCount,
+            memorySize: manifest.memorySize,
+            screenConfig: manifest.screenConfig,
+            networkConfig: networkConfig,
+            diskImage: manifest.diskImage,
+            nvramStorage: manifest.nvramStorage,
+            romImages: manifest.romImages,
+            sepStorage: manifest.sepStorage
+        )
+    }
+
+    private static func ensureNetworkMAC(
+        manifest: VPhoneVirtualMachineManifest,
+        configURL: URL
+    ) throws -> VPhoneVirtualMachineManifest {
+        guard manifest.networkConfig.mode != .none else { return manifest }
+
+        let current = manifest.networkConfig.macAddress
+        let mac = normalizedMACAddress(current) ?? randomLocalMACAddress()
+        guard mac != current else { return manifest }
+
+        let networkConfig = VPhoneVirtualMachineManifest.NetworkConfig(
+            mode: manifest.networkConfig.mode,
+            macAddress: mac,
+            bridgedInterface: manifest.networkConfig.bridgedInterface
+        )
+        let updated = withNetworkConfig(manifest, networkConfig: networkConfig)
+        try updated.write(to: configURL)
+        print("[vphone] Saved network MAC to config.plist: \(mac)")
+        return updated
     }
 
     init(options: Options) throws {
@@ -166,6 +239,8 @@ class VPhoneVirtualMachine: NSObject, VZVirtualMachineDelegate {
             ecidHex = nil
             print("[vphone] Warning: failed to resolve ECID from machineIdentifier")
         }
+
+        manifest = try Self.ensureNetworkMAC(manifest: manifest, configURL: options.configURL)
 
         let auxStorage = try VZMacAuxiliaryStorage(
             creatingStorageAt: options.nvramURL,

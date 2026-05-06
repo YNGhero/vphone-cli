@@ -79,6 +79,20 @@ VPHONE_LANGUAGE_RESPRING=1
 VPHONE_NETWORK_MODE=nat
 # VPHONE_NETWORK_INTERFACE=en0
 
+# Optional stable virtual NIC MAC. Leave commented to auto-generate a unique
+# locally-administered MAC per instance. Cloning/reset identity regenerates it.
+# If VPHONE_CREATE_COUNT > 1, batch-create will ignore this fixed value and
+# let each instance generate its own MAC automatically.
+# VPHONE_MAC_ADDRESS=02:11:22:33:44:55
+
+# Optional per-instance guest SystemConfiguration proxy state is normally set by:
+#   zsh scripts/set_instance_proxy.sh vm.instances/<name> socks5://host:1080 --test
+# The script writes these fields back to instance.env for display in the manager:
+# VPHONE_PROXY_URL=socks5://host:1080
+# VPHONE_PROXY_MODE=socks5
+# VPHONE_PROXY_HOST=host
+# VPHONE_PROXY_PORT=1080
+
 # Optional multi-instance base directory.
 # VPHONE_INSTANCES_DIR="/Users/true/Documents/vphone-cli/vm.instances"
 

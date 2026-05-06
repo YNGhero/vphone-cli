@@ -41,6 +41,8 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
     private weak var appNewDeviceSidebarButton: NSButton?
     private weak var appRestoreSidebarButton: NSButton?
     private weak var locationByIPSidebarButton: NSButton?
+    private weak var setProxySidebarButton: NSButton?
+    private weak var clearProxySidebarButton: NSButton?
     private weak var importPhotoSidebarButton: NSButton?
     private weak var typeASCIISidebarButton: NSButton?
     private weak var deletePhotosSidebarButton: NSButton?
@@ -63,6 +65,12 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
         didSet { refreshToolbarAvailability() }
     }
     var onLocationByIPPressed: (() -> Void)? {
+        didSet { refreshToolbarAvailability() }
+    }
+    var onSetProxyPressed: (() -> Void)? {
+        didSet { refreshToolbarAvailability() }
+    }
+    var onClearProxyPressed: (() -> Void)? {
         didSet { refreshToolbarAvailability() }
     }
     var onImportPhotoPressed: (() -> Void)? {
@@ -225,6 +233,12 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
         locationByIPSidebarButton = makeSidebarButton(
             title: "按 IP 定位", symbolName: "mappin.and.ellipse", action: #selector(locationByIPPressed)
         )
+        setProxySidebarButton = makeSidebarButton(
+            title: "设置实例代理", symbolName: "network", action: #selector(setProxyPressed)
+        )
+        clearProxySidebarButton = makeSidebarButton(
+            title: "清除实例代理", symbolName: "network.slash", action: #selector(clearProxyPressed)
+        )
         importPhotoSidebarButton = makeSidebarButton(
             title: "导入图片", symbolName: "photo.on.rectangle", action: #selector(importPhotoPressed)
         )
@@ -261,6 +275,8 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
             appNewDeviceSidebarButton,
             appRestoreSidebarButton,
             locationByIPSidebarButton,
+            setProxySidebarButton,
+            clearProxySidebarButton,
             importPhotoSidebarButton,
             typeASCIISidebarButton,
             deletePhotosSidebarButton,
@@ -518,6 +534,8 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
         appNewDeviceSidebarButton?.isEnabled = onAppNewDevicePressed != nil
         appRestoreSidebarButton?.isEnabled = onAppRestorePressed != nil
         locationByIPSidebarButton?.isEnabled = guestConnected && onLocationByIPPressed != nil
+        setProxySidebarButton?.isEnabled = onSetProxyPressed != nil
+        clearProxySidebarButton?.isEnabled = onClearProxyPressed != nil
         importPhotoSidebarButton?.isEnabled = onImportPhotoPressed != nil
         typeASCIISidebarButton?.isEnabled = onTypeASCIIPressed != nil
         deletePhotosSidebarButton?.isEnabled = onDeletePhotosPressed != nil
@@ -552,6 +570,14 @@ class VPhoneWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
 
     @objc private func locationByIPPressed() {
         onLocationByIPPressed?()
+    }
+
+    @objc private func setProxyPressed() {
+        onSetProxyPressed?()
+    }
+
+    @objc private func clearProxyPressed() {
+        onClearProxyPressed?()
     }
 
     @objc private func importPhotoPressed() {
