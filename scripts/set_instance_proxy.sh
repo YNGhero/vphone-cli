@@ -185,14 +185,18 @@ guest_ssh() {
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
     -o PreferredAuthentications=password
+    -o PubkeyAuthentication=no
+    -o NumberOfPasswordPrompts=1
+    -o ConnectionAttempts=3
     -o ConnectTimeout=8
+    -o LogLevel=ERROR
     -p "$SSH_PORT"
     root@127.0.0.1
   )
   if (( $# == 0 )); then
-    sshpass -p alpine ssh "${ssh_args[@]}"
+    sshpass -p "${VPHONE_SSH_PASSWORD:-alpine}" ssh "${ssh_args[@]}"
   else
-    sshpass -p alpine ssh "${ssh_args[@]}" "${GUEST_REMOTE_PATH}$1"
+    sshpass -p "${VPHONE_SSH_PASSWORD:-alpine}" ssh "${ssh_args[@]}" "${GUEST_REMOTE_PATH}$1"
   fi
 }
 

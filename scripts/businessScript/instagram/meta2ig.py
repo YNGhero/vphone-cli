@@ -24,7 +24,7 @@ if str(BUSINESS_ROOT) not in sys.path:
 from vphonekit import VPhoneSession
 
 CONFIG = json.loads((Path(__file__).with_name("config.json")).read_text())
-DEFAULT_PROXY = "sbj9104335-region-JP_SG_GB_VN_TH_AU_CA_KR_LA_MY_TW-sid-username-t-60:qwertyuiop@sg.arxlabs.io:3010"
+DEFAULT_PROXY = "sbj9104335-region-Rand-sid-username-t-60:qwertyuiop@sg.arxlabs.io:3010"
 INSTAGRAM_BUNDLE_ID = CONFIG.get("bundle_id", "com.burbn.instagram")
 DEFAULT_META_MYSQL_DSN = "root:root@tcp(127.0.0.1:3306)/zeus_accounts?charset=utf8mb4&parseTime=true&loc=Local"
 DEFAULT_META_MYSQL_TABLE = "ios_metaai_accounts"
@@ -98,6 +98,45 @@ def set_instance_proxy(
         test=test,
         no_restart=no_restart,
     )
+
+
+def set_instance_proxy_with_retry(
+    vp: VPhoneSession,
+    *,
+    proxy: str,
+    test: bool = False,
+    no_restart: bool = False,
+    attempts: int = 4,
+    retry_delay: float = 3.0,
+) -> dict[str, Any]:
+    # 中文注释：多实例并发时 guest SSH 偶发 Permission denied / connection reset。
+    # 这里先探测 SSH 就绪，再对整个 set_instance_proxy.sh 重试；失败的 bridge 会在下次脚本启动时自动 stop/recreate。
+    attempts = max(1, attempts)
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        wait_for_guest_ssh_ready(
+            vp,
+            timeout=12.0 if attempt == 1 else 25.0,
+            interval=1.5,
+        )
+        try:
+            resp = set_instance_proxy(
+                vp,
+                proxy=proxy,
+                test=test,
+                no_restart=no_restart,
+            )
+            resp["attempt"] = attempt
+            return resp
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt >= attempts:
+                break
+            if not is_transient_ssh_error(last_error):
+                raise
+            time.sleep((retry_delay * attempt) + random.uniform(0.2, 1.2))
+
+    raise RuntimeError(f"设置代理失败，已重试 {attempts} 次；最后错误：{last_error}")
 
 
 def reset_app_new_device(
@@ -726,6 +765,33 @@ def read_instagram_account_json(
     return parse_json_from_text(stdout)
 
 
+def read_instagram_account_json_with_retry(
+    vp: VPhoneSession,
+    *,
+    path: str = DEFAULT_INSTAGRAM_ACCOUNT_JSON_PATH,
+    timeout: float = 60.0,
+    interval: float = 3.0,
+) -> dict[str, Any]:
+    # 中文注释：Allow and continue 后即使头像/引导页处理失败，也要继续等 hook 写出账号 JSON 并上报。
+    # 因此这里用重试读取 /tmp/instagram_account.json 作为最终账号创建成功信号之一。
+    deadline = time.monotonic() + max(0.0, timeout)
+    last_error = ""
+    while True:
+        try:
+            return read_instagram_account_json(
+                vp,
+                path=path,
+                timeout=min(10.0, max(1.0, deadline - time.monotonic())),
+            )
+        except Exception as exc:
+            last_error = str(exc)
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(f"等待账号JSON超时: {path}; 最后错误={last_error}")
+        time.sleep(min(max(0.2, interval), remaining))
+
+
 def build_secondary_account_payload(
     account_json: dict[str, Any],
     *,
@@ -835,12 +901,26 @@ def instagram_entry_from_ocr_nodes(vp: VPhoneSession, nodes: list[dict[str, Any]
     login_node = find_ocr_node_by_text(vp, nodes, "Log in")
     create_node = find_ocr_node_by_text(vp, nodes, "Create new account")
     profile_node = find_ocr_node_by_text(vp, nodes, "I already have a profile")
+    sign_up_node = find_ocr_node_by_text(vp, nodes, "Sign up")
+    continue_without_account_node = find_ocr_node_by_text(vp, nodes, "Continue without an account")
+    username_field_node = (
+        find_ocr_node_by_text(vp, nodes, "Username")
+        or find_ocr_node_by_text(vp, nodes, "Mobile number or email")
+    )
+    password_field_node = find_ocr_node_by_text(vp, nodes, "Password")
     has_login = login_node is not None
     has_create = create_node is not None
     has_profile = profile_node is not None
+    has_sign_up = sign_up_node is not None
+    has_continue_without_account = continue_without_account_node is not None
+    has_login_form = username_field_node is not None or password_field_node is not None
 
     if has_profile:
         branch = "already_have_profile"
+    elif has_login and (has_continue_without_account or (has_sign_up and not has_login_form)):
+        # 中文注释：新版启动页是 Sign up / Continue without an account / Log in；
+        # 这里的 Log in 只是进入登录表单的入口按钮，不能直接等待 Username。
+        branch = "landing_login"
     elif has_login or has_create:
         branch = "login_or_create"
     else:
@@ -852,9 +932,16 @@ def instagram_entry_from_ocr_nodes(vp: VPhoneSession, nodes: list[dict[str, Any]
         "has_login": has_login,
         "has_create_new_account": has_create,
         "has_already_have_profile": has_profile,
+        "has_sign_up": has_sign_up,
+        "has_continue_without_account": has_continue_without_account,
+        "has_login_form": has_login_form,
         "login_node": login_node,
         "create_node": create_node,
         "profile_node": profile_node,
+        "sign_up_node": sign_up_node,
+        "continue_without_account_node": continue_without_account_node,
+        "username_field_node": username_field_node,
+        "password_field_node": password_field_node,
         "node_count": len(nodes),
         "source": "ocr",
     }
@@ -867,9 +954,10 @@ def wait_for_instagram_entry_branch(
     interval: float = 0.5,
 ) -> dict[str, Any]:
     # 中文注释：只使用 OCR 等待 Instagram 入口分支。
-    # 分支 1：Log in / Create new account
-    # 分支 2：I already have a profile（独立分支，出现后后续会点击）
-    # 三个按钮任意一个出现就结束等待，最多等待 timeout 秒。
+    # 分支 1：新版启动页 Sign up / Continue without an account / Log in（后续点击 Log in 进入登录表单）
+    # 分支 2：Log in / Create new account 或已经在登录表单
+    # 分支 3：I already have a profile（独立分支，出现后后续会点击）
+    # 任意入口出现就结束等待，最多等待 timeout 秒。
     deadline = time.monotonic() + max(0.0, timeout)
     last_resp: dict[str, Any] = {
         "ok": False,
@@ -877,6 +965,10 @@ def wait_for_instagram_entry_branch(
         "has_login": False,
         "has_create_new_account": False,
         "has_already_have_profile": False,
+        "has_sign_up": False,
+        "has_continue_without_account": False,
+        "has_login_form": False,
+        "login_node": None,
         "profile_node": None,
         "node_count": 0,
         "source": "",
@@ -905,14 +997,20 @@ def after_login_state_from_ocr_nodes(vp: VPhoneSession, nodes: list[dict[str, An
     # 中文注释：点击 Log in 后只用同一张 OCR 快照判断页面状态。
     # 状态 1：看到 Meta Horizon，后续直接点击 Meta Horizon。
     # 状态 2：同一屏同时看到 Sign up 和 Try again，说明登录失败，后续点击 Try again 再重按 Log in。
+    # 状态 3：弹窗 Unable to log in / OK，也是临时登录失败，点 OK 后再重按 Log in。
     meta_horizon_node = find_ocr_node_by_text(vp, nodes, "Meta Horizon")
     sign_up_node = find_ocr_node_by_text(vp, nodes, "Sign up")
     try_again_node = find_ocr_node_by_text(vp, nodes, "Try again")
+    unable_login_node = find_ocr_node_by_text(vp, nodes, "Unable to log in")
+    unexpected_error_node = find_ocr_node_by_text(vp, nodes, "An unexpected error occurred")
+    ok_node = find_bottom_value_equal_node(nodes, "OK")
 
     if meta_horizon_node is not None:
         state = "meta_horizon"
     elif sign_up_node is not None and try_again_node is not None:
         state = "sign_up_try_again"
+    elif (unable_login_node is not None or unexpected_error_node is not None) and ok_node is not None:
+        state = "unable_login_ok"
     else:
         state = "unknown"
 
@@ -922,9 +1020,15 @@ def after_login_state_from_ocr_nodes(vp: VPhoneSession, nodes: list[dict[str, An
         "has_meta_horizon": meta_horizon_node is not None,
         "has_sign_up": sign_up_node is not None,
         "has_try_again": try_again_node is not None,
+        "has_unable_login": unable_login_node is not None,
+        "has_unexpected_error": unexpected_error_node is not None,
+        "has_ok": ok_node is not None,
         "meta_horizon_node": meta_horizon_node,
         "sign_up_node": sign_up_node,
         "try_again_node": try_again_node,
+        "unable_login_node": unable_login_node,
+        "unexpected_error_node": unexpected_error_node,
+        "ok_node": ok_node,
         "node_count": len(nodes),
         "nodes": nodes,
         "source": "ocr",
@@ -937,7 +1041,7 @@ def wait_for_after_login_state(
     timeout: float = 15.0,
     interval: float = 0.5,
 ) -> dict[str, Any]:
-    # 中文注释：等待登录后的关键状态出现：Meta Horizon，或 Sign up + Try again。
+    # 中文注释：等待登录后的关键状态出现：Meta Horizon、Sign up + Try again、Unable to log in + OK。
     deadline = time.monotonic() + max(0.0, timeout)
     last_resp: dict[str, Any] = {
         "ok": False,
@@ -945,6 +1049,9 @@ def wait_for_after_login_state(
         "has_meta_horizon": False,
         "has_sign_up": False,
         "has_try_again": False,
+        "has_unable_login": False,
+        "has_unexpected_error": False,
+        "has_ok": False,
         "node_count": 0,
         "source": "ocr",
     }
@@ -1774,8 +1881,774 @@ def find_pick_interests_action_node(
     )
 
 
+FREE_WITH_ADS_CHOICE_PAGE_TEXTS = [
+    "Want to subscribe or continue using our products free of charge with ads?",
+    "Want to subscribe or continue using our products",
+    "continue using our products free of charge with ads",
+    "Use free of charge with ads",
+    "Subscribe to use without ads",
+]
+
+FREE_WITH_ADS_AGREE_PAGE_TEXTS = [
+    "To use our products free of charge with ads",
+    "agree to Meta processing your data",
+    "Meta processing your data",
+    "processing your data for the following",
+]
+
+AD_EXPERIENCE_MANAGE_PAGE_TEXTS = [
+    "You can manage your ad experience",
+    "manage your ad experience",
+]
+
+FREE_WITH_ADS_ACTION_STATES = {
+    "free_with_ads_choice",
+    "free_with_ads_agree",
+    "ad_experience_manage",
+}
+
+
+def find_free_with_ads_choice_page_anchor(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    # 中文注释：识别“免费含广告继续使用”选择页；该页需要先选 Use free... 再点 Continue。
+    for text in FREE_WITH_ADS_CHOICE_PAGE_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return text, node
+
+    # 中文注释：OCR 有时把标题/选项拆成多行；同时出现 Use free 与 Subscribe 才判定为选择页。
+    use_node = (
+        find_ocr_node_by_text(vp, nodes, "Use free of charge")
+        or find_ocr_node_by_text(vp, nodes, "free of charge with ads")
+    )
+    subscribe_node = find_ocr_node_by_text(vp, nodes, "Subscribe to use without ads")
+    if use_node is not None and subscribe_node is not None:
+        return "Use free of charge with ads", use_node
+    return None
+
+
+def find_free_with_ads_agree_page_anchor(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    # 中文注释：识别“同意 Meta 处理广告数据”页；底部按钮是 Agree。
+    for text in FREE_WITH_ADS_AGREE_PAGE_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return text, node
+
+    agree_node = find_bottom_value_equal_node(nodes, "Agree")
+    processing_node = (
+        find_ocr_node_by_text(vp, nodes, "Meta processing")
+        or find_ocr_node_by_text(vp, nodes, "processing your data")
+    )
+    if agree_node is not None and processing_node is not None:
+        return "Agree", agree_node
+    return None
+
+
+def find_ad_experience_manage_page_anchor(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    # 中文注释：识别“可以管理广告体验”确认页；底部按钮是 OK。
+    for text in AD_EXPERIENCE_MANAGE_PAGE_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return text, node
+    return None
+
+
+def find_free_with_ads_use_node(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    # 中文注释：优先点击 Use free of charge with ads 选项文本；OCR 漏识别时根据同页按钮/选项位置兜底。
+    for text in ("Use free of charge with ads", "Use free of charge"):
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return node
+
+    subscribe_node = find_ocr_node_by_text(vp, nodes, "Subscribe to use without ads")
+    subscribe_center = ocr_node_center(subscribe_node)
+    if subscribe_center is not None:
+        x, y = subscribe_center
+        return synthetic_ocr_node(
+            "Use free of charge with ads",
+            x,
+            max(float(height or 2796) * 0.38, y - float(height or 2796) * 0.12),
+        )
+
+    continue_node = find_bottom_value_equal_node(nodes, "Continue")
+    continue_center = ocr_node_center(continue_node)
+    if continue_center is not None:
+        x, y = continue_center
+        return synthetic_ocr_node(
+            "Use free of charge with ads",
+            x,
+            max(float(height or 2796) * 0.45, y - float(height or 2796) * 0.30),
+        )
+
+    return synthetic_ocr_node(
+        "Use free of charge with ads",
+        float(width or 1290) * 0.50,
+        float(height or 2796) * 0.60,
+    )
+
+
+def find_free_with_ads_continue_node(
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    # 中文注释：选择免费含广告后点击底部 Continue；OCR 漏掉时合成底部按钮中心。
+    node = find_bottom_value_equal_node(nodes, "Continue")
+    if node is not None:
+        return node
+    return synthetic_ocr_node(
+        "Continue",
+        float(width or 1290) * 0.50,
+        float(height or 2796) * 0.923,
+    )
+
+
+def find_free_with_ads_agree_node(
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    # 中文注释：广告数据同意页底部按钮是 Agree。
+    node = find_bottom_value_equal_node(nodes, "Agree")
+    if node is not None:
+        return node
+    return synthetic_ocr_node(
+        "Agree",
+        float(width or 1290) * 0.50,
+        float(height or 2796) * 0.923,
+    )
+
+
+def find_ad_experience_ok_node(
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    # 中文注释：广告体验管理说明页底部按钮是 OK。
+    node = find_bottom_value_equal_node(nodes, "OK")
+    if node is not None:
+        return node
+    return synthetic_ocr_node(
+        "OK",
+        float(width or 1290) * 0.50,
+        float(height or 2796) * 0.923,
+    )
+
+
+def find_free_with_ads_action(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any] | None:
+    # 中文注释：返回免费含广告链路中的下一步动作：
+    # 1. 选择页：Use free of charge with ads -> Continue；
+    # 2. 同意页：Agree；
+    # 3. 管理提示页：OK。
+    choice_anchor = find_free_with_ads_choice_page_anchor(vp, nodes)
+    if choice_anchor is not None:
+        matched_text, _ = choice_anchor
+        use_node = find_free_with_ads_use_node(vp, nodes, width=width, height=height)
+        continue_node = find_free_with_ads_continue_node(nodes, width=width, height=height)
+        return {
+            "state": "free_with_ads_choice",
+            "matched_text": matched_text,
+            "select_node": use_node,
+            "use_node": use_node,
+            "continue_node": continue_node,
+            "action_node": continue_node,
+        }
+
+    agree_anchor = find_free_with_ads_agree_page_anchor(vp, nodes)
+    if agree_anchor is not None:
+        matched_text, _ = agree_anchor
+        return {
+            "state": "free_with_ads_agree",
+            "matched_text": matched_text,
+            "action_node": find_free_with_ads_agree_node(nodes, width=width, height=height),
+        }
+
+    manage_anchor = find_ad_experience_manage_page_anchor(vp, nodes)
+    if manage_anchor is not None:
+        matched_text, _ = manage_anchor
+        return {
+            "state": "ad_experience_manage",
+            "matched_text": matched_text,
+            "action_node": find_ad_experience_ok_node(nodes, width=width, height=height),
+        }
+
+    return None
+
+
+def click_free_with_ads_action(
+    vp: VPhoneSession,
+    action: dict[str, Any],
+    *,
+    screen: bool = False,
+) -> dict[str, Any]:
+    # 中文注释：执行免费含广告链路动作。选择页必须先点 Use free...，再点 Continue。
+    state = str(action.get("state") or "")
+    result: dict[str, Any] = {
+        "ok": False,
+        "state": state,
+        "free_with_ads_choice": False,
+        "free_with_ads_use_clicked": False,
+        "free_with_ads_continue_clicked": False,
+        "free_with_ads_agree": False,
+        "free_with_ads_agree_clicked": False,
+        "ad_experience_manage": False,
+        "ad_experience_ok_clicked": False,
+        "error": "",
+    }
+
+    if state == "free_with_ads_choice":
+        use_node = action.get("use_node") or action.get("select_node")
+        continue_node = action.get("continue_node") or action.get("action_node")
+        if not isinstance(use_node, dict):
+            result["error"] = "免费含广告选择页缺少 Use free OCR 坐标"
+            return result
+        if not isinstance(continue_node, dict):
+            result["error"] = "免费含广告选择页缺少 Continue OCR 坐标"
+            return result
+
+        result["free_with_ads_choice"] = True
+        use_clicked = click_ocr_node_with_delay(
+            vp,
+            use_node,
+            action_name="点击免费含广告选项",
+            screen=screen,
+        )
+        result["free_with_ads_use_clicked"] = use_clicked
+        if not use_clicked:
+            result["error"] = "点击 Use free of charge with ads 失败"
+            return result
+
+        continue_clicked = click_ocr_node_with_delay(
+            vp,
+            continue_node,
+            action_name="点击免费含广告Continue",
+            screen=screen,
+        )
+        result["free_with_ads_continue_clicked"] = continue_clicked
+        result["ok"] = use_clicked and continue_clicked
+        if not continue_clicked:
+            result["error"] = "点击 Continue 失败"
+        return result
+
+    if state == "free_with_ads_agree":
+        action_node = action.get("action_node")
+        if not isinstance(action_node, dict):
+            result["error"] = "免费含广告同意页缺少 Agree OCR 坐标"
+            return result
+        result["free_with_ads_agree"] = True
+        agree_clicked = click_ocr_node_with_delay(
+            vp,
+            action_node,
+            action_name="点击免费含广告Agree",
+            screen=screen,
+        )
+        result["free_with_ads_agree_clicked"] = agree_clicked
+        result["ok"] = agree_clicked
+        if not agree_clicked:
+            result["error"] = "点击 Agree 失败"
+        return result
+
+    if state == "ad_experience_manage":
+        action_node = action.get("action_node")
+        if not isinstance(action_node, dict):
+            result["error"] = "广告体验管理页缺少 OK OCR 坐标"
+            return result
+        result["ad_experience_manage"] = True
+        ok_clicked = click_ocr_node_with_delay(
+            vp,
+            action_node,
+            action_name="点击广告体验OK",
+            screen=screen,
+        )
+        result["ad_experience_ok_clicked"] = ok_clicked
+        result["ok"] = ok_clicked
+        if not ok_clicked:
+            result["error"] = "点击 OK 失败"
+        return result
+
+    result["error"] = f"未知免费含广告状态: {state}"
+    return result
+
+
+
+
+ADS_DATA_CONSENT_DIALOG_TEXTS = [
+    "Choose if we process your data for ads",
+    "process your data for ads",
+    "personalized ads on Meta Company Products",
+]
+
+
+def find_ads_data_consent_dialog_anchor(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    # 中文注释：识别“Choose if we process your data for ads”弹窗；需要点击 Get started 继续。
+    for text in ADS_DATA_CONSENT_DIALOG_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return text, node
+    return None
+
+
+def find_ads_data_get_started_node(
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    # 中文注释：弹窗底部按钮是 Get started；OCR 漏掉时按弹窗底部中间坐标兜底。
+    node = find_bottom_value_equal_node(nodes, "Get started")
+    if node is not None:
+        return node
+    return synthetic_ocr_node(
+        "Get started",
+        float(width or 1290) * 0.50,
+        float(height or 2796) * 0.695,
+    )
+
+
+def find_ads_data_consent_action(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any] | None:
+    anchor = find_ads_data_consent_dialog_anchor(vp, nodes)
+    if anchor is None:
+        return None
+    matched_text, _ = anchor
+    return {
+        "state": "ads_data_consent",
+        "matched_text": matched_text,
+        "action_node": find_ads_data_get_started_node(nodes, width=width, height=height),
+    }
+
+
+COOKIES_PAGE_TEXTS = [
+    "Allow the use of cookies by Instagram?",
+    "Allow the use of cookies",
+    "About cookies",
+    "Decline optional cookies",
+]
+
+
+def find_cookies_page_anchor(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    # 中文注释：识别成功后可能出现的 cookies 授权页；该页需要点底部 Allow all cookies。
+    for text in COOKIES_PAGE_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return text, node
+    return None
+
+
+def find_allow_all_cookies_node(
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    # 中文注释：cookies 页底部按钮是 Allow all cookies；OCR 漏掉时合成底部蓝色按钮中心。
+    node = find_bottom_value_equal_node(nodes, "Allow all cookies")
+    if node is not None:
+        return node
+    return synthetic_ocr_node(
+        "Allow all cookies",
+        float(width or 1290) * 0.50,
+        float(height or 2796) * 0.923,
+    )
+
+
+def find_cookies_action(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any] | None:
+    anchor = find_cookies_page_anchor(vp, nodes)
+    if anchor is None:
+        return None
+    matched_text, _ = anchor
+    return {
+        "state": "cookies_page",
+        "matched_text": matched_text,
+        "action_node": find_allow_all_cookies_node(nodes, width=width, height=height),
+    }
+
+
+PHOTOS_ACCESS_PAGE_TEXTS = [
+    "Allow Instagram to access your photos and videos",
+    "your photos and videos",
+    "access your photos and videos",
+    "photos and videos from your camera roll",
+    "add photos and videos from your camera roll",
+]
+
+PHOTOS_PERMISSION_DIALOG_TEXTS = [
+    "would like full access to your Photo Library",
+    "full access to your Photo Library",
+    "Photo Library",
+    "Would Like to Access Your Photos",
+    "Allow “Instagram” to access your photos?",
+    "Allow \"Instagram\" to access your photos?",
+    "Allow Instagram to access your photos?",
+    "would like to access your photos",
+    "would like access to your photos",
+    "Instagram would like to access",
+    "access your photos?",
+]
+
+
+def find_photos_access_page_anchor(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    # 中文注释：识别点击头像后出现的 Instagram 照片/视频访问说明页；该页需要点底部 Continue。
+    for text in PHOTOS_ACCESS_PAGE_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return text, node
+
+    combined = " ".join(ocr_node_value(node) for node in nodes).casefold()
+    combined = re.sub(r"\s+", " ", combined)
+    if (
+        "allow instagram" in combined
+        and "photos" in combined
+        and "videos" in combined
+        and (
+            "camera roll" in combined
+            or "settings work" in combined
+            or "how you'll use" in combined
+            or "how we'll use" in combined
+        )
+    ):
+        anchor_node = (
+            find_ocr_node_by_text(vp, nodes, "photos and videos")
+            or find_ocr_node_by_text(vp, nodes, "How you'll use this")
+            or find_ocr_node_by_text(vp, nodes, "How we'll use this")
+        )
+        if anchor_node is None:
+            width, height = ocr_nodes_extent(nodes)
+            anchor_node = synthetic_ocr_node("photos_access_page", width * 0.50, height * 0.50)
+        return "photos_access_combined", anchor_node
+    return None
+
+
+def find_photos_permission_dialog_anchor(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    # 中文注释：识别 iOS 系统相册权限弹窗；不要把 Instagram 自己页面插画里的 Allow Full Access 当弹窗。
+    has_dialog_button = any(
+        find_ocr_node_by_text(vp, nodes, text) is not None
+        for text in (
+            "Allow Full Access",
+            "Allow Access to All Photos",
+            "Allow All Photos",
+            "Select Photos",
+            "Don't Allow",
+            "Don’t Allow",
+            "Dont Allow",
+            "Keep Current Selection",
+            "OK",
+        )
+    )
+    if not has_dialog_button:
+        return None
+
+    combined = " ".join(ocr_node_value(node) for node in nodes).casefold()
+    combined = re.sub(r"\s+", " ", combined)
+    has_system_dialog_text = (
+        "photo library" in combined
+        or "would like full access" in combined
+        or "would like to access your photos" in combined
+        or "would like access to your photos" in combined
+        or "would like to access your photo" in combined
+        or ("select photos" in combined and "would like" in combined)
+    )
+    if not has_system_dialog_text:
+        return None
+
+    for text in PHOTOS_PERMISSION_DIALOG_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return text, node
+
+    anchor_node = (
+        find_ocr_node_by_text(vp, nodes, "Photo Library")
+        or find_ocr_node_by_text(vp, nodes, "would like")
+        or find_ocr_node_by_text(vp, nodes, "Allow Full Access")
+    )
+    if anchor_node is None:
+        width, height = ocr_nodes_extent(nodes)
+        anchor_node = synthetic_ocr_node("photos_permission_dialog", width * 0.50, height * 0.50)
+    return "photos_permission_combined", anchor_node
+
+
+def find_photos_access_continue_node(
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    # 中文注释：照片访问说明页底部按钮是 Continue；OCR 漏掉时合成底部蓝色按钮中心。
+    node = find_bottom_value_equal_node(nodes, "Continue")
+    if node is not None:
+        return node
+    return synthetic_ocr_node(
+        "Continue",
+        float(width or 1290) * 0.50,
+        float(height or 2796) * 0.923,
+    )
+
+
+def find_photos_permission_allow_node(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    # 中文注释：上传头像需要相册可见；系统弹窗优先点 Allow Full Access。
+    for text in (
+        "Allow Full Access",
+        "Allow Access to All Photos",
+        "Allow access to all photos",
+        "Allow All Photos",
+        "Full Access",
+        "OK",
+    ):
+        node = find_ocr_node_by_text(vp, nodes, text, prefer_bottom=True)
+        if node is not None:
+            return node
+
+    allow_matches = [
+        node
+        for node in vp.ocr.filter_nodes(nodes, "Allow", exact=False, case_sensitive=False)
+        if "don't" not in ocr_node_value(node).casefold()
+        and "dont" not in ocr_node_value(node).casefold()
+        and "not now" not in ocr_node_value(node).casefold()
+        and ocr_node_center(node) is not None
+    ]
+    allow_matches.sort(key=lambda node: ocr_node_center(node)[1], reverse=True)  # type: ignore[index]
+    if allow_matches:
+        return allow_matches[0]
+
+    return synthetic_ocr_node(
+        "Allow Full Access",
+        float(width or 1290) * 0.50,
+        float(height or 2796) * 0.62,
+    )
+
+
+def find_photos_access_action(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any] | None:
+    # 中文注释：返回照片访问说明页 / iOS 相册权限弹窗的下一步动作。
+    dialog_anchor = find_photos_permission_dialog_anchor(vp, nodes)
+    if dialog_anchor is not None:
+        matched_text, _ = dialog_anchor
+        return {
+            "state": "photos_permission_dialog",
+            "matched_text": matched_text,
+            "action_node": find_photos_permission_allow_node(vp, nodes, width=width, height=height),
+        }
+
+    page_anchor = find_photos_access_page_anchor(vp, nodes)
+    if page_anchor is not None:
+        matched_text, _ = page_anchor
+        return {
+            "state": "photos_access_page",
+            "matched_text": matched_text,
+            "action_node": find_photos_access_continue_node(nodes, width=width, height=height),
+        }
+
+    return None
+
+
+CONTACTS_ACCESS_PAGE_TEXTS = [
+    "Next, you can allow access to your contacts",
+    "allow access to your contacts",
+    "your contacts to make it easier",
+    "make it easier to find your friends",
+    "find your friends on Instagram",
+    "Your contacts will be periodically synced",
+    "periodically synced and stored securely",
+    "You can turn off syncing",
+]
+
+CONTACTS_PERMISSION_DIALOG_TEXTS = [
+    "would like to access your Contacts",
+    "Instagram will use your contacts",
+    "Your contacts will be periodically synced",
+]
+
+
+def find_contacts_access_page_anchor(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    # 中文注释：识别联系人同步引导页。该页可能出现在头像页前，也可能出现在头像流程结束后。
+    for text in CONTACTS_ACCESS_PAGE_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return text, node
+
+    # 中文注释：截图里的标题经常被 OCR 拆成多行：
+    # “Next, you can allow access to” / “your contacts ...”。
+    # 所以除了单节点包含匹配，还要用整屏 OCR 拼接后的关键词组合兜底。
+    combined = " ".join(ocr_node_value(node) for node in nodes).casefold()
+    combined = re.sub(r"\s+", " ", combined)
+    contact_page_markers = (
+        ("allow access" in combined and "contacts" in combined and "instagram" in combined),
+        ("contacts" in combined and "make it easier" in combined and "find your friends" in combined),
+        ("contacts" in combined and "periodically synced" in combined),
+        ("syncing" in combined and "settings" in combined and "learn more" in combined),
+        ("allow full access" in combined and "select contacts" in combined and "contacts" in combined),
+    )
+    if any(contact_page_markers):
+        anchor_node = (
+            find_ocr_node_by_text(vp, nodes, "contacts")
+            or find_ocr_node_by_text(vp, nodes, "Allow Full Access")
+            or find_ocr_node_by_text(vp, nodes, "Learn more")
+        )
+        if anchor_node is None:
+            width, height = ocr_nodes_extent(nodes)
+            anchor_node = synthetic_ocr_node("contacts_access_page", width * 0.50, height * 0.50)
+        return "contacts_access_combined", anchor_node
+    return None
+
+
+def find_contacts_permission_dialog_anchor(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    # 中文注释：识别 iOS 联系人权限弹窗；弹窗出现时优先点 Don't Allow，避免业务流程依赖联系人授权。
+    # 注意：Instagram 自己的联系人引导页正文也有 “Your contacts will be periodically synced”，
+    # 不能只靠正文判定弹窗；必须同屏有 Don't Allow / OK / Allow 这类系统弹窗按钮。
+    has_dialog_button = any(
+        find_ocr_node_by_text(vp, nodes, text) is not None
+        for text in ("Don't Allow", "Don’t Allow", "Dont Allow", "Allow", "OK")
+    )
+    if not has_dialog_button:
+        return None
+
+    for text in CONTACTS_PERMISSION_DIALOG_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return text, node
+    return None
+
+
+def find_contacts_access_next_node(
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    # 中文注释：联系人引导页底部按钮是 Next；OCR 漏掉时合成底部中间按钮坐标。
+    node = find_bottom_value_equal_node(nodes, "Next")
+    if node is not None:
+        return node
+    # 中文注释：如果 OCR 把按钮识别成带空格/标点的文本，也选最靠下的 Next，而不是标题里的 “Next,”。
+    next_like_nodes = [
+        node
+        for node in nodes
+        if re.fullmatch(r"(?i)\s*next\s*[\).,>»]*\s*", ocr_node_value(node))
+        and ocr_node_center(node) is not None
+    ]
+    next_like_nodes.sort(key=lambda node: ocr_node_center(node)[1], reverse=True)  # type: ignore[index]
+    if next_like_nodes:
+        return next_like_nodes[0]
+    return synthetic_ocr_node(
+        "Next",
+        float(width or 1290) * 0.50,
+        float(height or 2796) * 0.92,
+    )
+
+
+def find_contacts_permission_deny_node(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    # 中文注释：iOS 弹窗按钮可能 OCR 成 Don't Allow 或 Don’t Allow；找不到时用弹窗左下按钮坐标兜底。
+    for text in ("Don't Allow", "Don’t Allow", "Dont Allow"):
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return node
+    return synthetic_ocr_node(
+        "Don't Allow",
+        float(width or 1290) * 0.31,
+        float(height or 2796) * 0.672,
+    )
+
+
+def find_contacts_access_action(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any] | None:
+    # 中文注释：返回可处理的联系人页/弹窗状态。
+    # Instagram 联系人引导页正文和 iOS 权限弹窗文本相似；先识别完整页面，避免把页面误判成弹窗后反复点左侧兜底坐标。
+    page_anchor = find_contacts_access_page_anchor(vp, nodes)
+    if page_anchor is not None:
+        matched_text, _ = page_anchor
+        return {
+            "state": "contacts_access",
+            "matched_text": matched_text,
+            "action_node": find_contacts_access_next_node(nodes, width=width, height=height),
+        }
+
+    dialog_anchor = find_contacts_permission_dialog_anchor(vp, nodes)
+    if dialog_anchor is not None:
+        matched_text, _ = dialog_anchor
+        return {
+            "state": "contacts_permission_dialog",
+            "matched_text": matched_text,
+            "action_node": find_contacts_permission_deny_node(vp, nodes, width=width, height=height),
+        }
+
+    return None
+
+
 GENERIC_TOP_SKIP_PAGE_TEXTS = [
-    "Allow Instagram to access",
     "Get Facebook suggestions",
     "Remember login info?",
 ]
@@ -1791,7 +2664,7 @@ PROFILE_CREATE_SUCCESS_TEXTS = [
     "Keep Instagram open to finish",
 ]
 
-POST_ALLOW_NON_AVATAR_SUCCESS_GRACE = 8.0
+POST_ALLOW_NON_AVATAR_SUCCESS_GRACE = 18.0
 
 
 def find_generic_top_skip_page_anchor(
@@ -1832,6 +2705,142 @@ def find_generic_top_skip_node(
         ),
         matched_text,
     )
+
+
+FACEBOOK_SUGGESTIONS_PAGE_TEXTS = [
+    "Get Facebook suggestions",
+    "Find people you know",
+    "from Facebook",
+    "Accounts Center",
+]
+
+FACEBOOK_OAUTH_DIALOG_TEXTS = [
+    "Wants to Use",
+    "facebook.com",
+    "to Sign In",
+    "This allows the app and website",
+    "share information about you",
+]
+
+
+def find_facebook_suggestions_page_anchor(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    # 中文注释：Facebook 找人页有两个版本：
+    # 1. Get Facebook suggestions
+    # 2. Find people you know / from Facebook
+    # 这类页面必须点右上角 Skip，不能点底部 Next/Continue，否则会弹 facebook.com 登录确认框。
+    for text in FACEBOOK_SUGGESTIONS_PAGE_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return text, node
+
+    combined = " ".join(ocr_node_value(node) for node in nodes).casefold()
+    combined = re.sub(r"\s+", " ", combined)
+    if "facebook" in combined and ("find people" in combined or "suggestions" in combined or "accounts center" in combined):
+        anchor_node = (
+            find_ocr_node_by_text(vp, nodes, "Facebook")
+            or find_ocr_node_by_text(vp, nodes, "Find people")
+            or find_ocr_node_by_text(vp, nodes, "suggestions")
+        )
+        if anchor_node is None:
+            width, height = ocr_nodes_extent(nodes)
+            anchor_node = synthetic_ocr_node("facebook_suggestions", width * 0.50, height * 0.25)
+        return "facebook_suggestions_combined", anchor_node
+    return None
+
+
+def find_facebook_oauth_sign_in_dialog_anchor(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    # 中文注释：iOS 弹窗：“Instagram” Wants to Use “facebook.com” to Sign In。
+    # 出现时必须点 Cancel；如果继续点背景 Skip，会一直卡循环。
+    has_cancel = find_bottom_value_equal_node(nodes, "Cancel") is not None
+    has_continue = find_bottom_value_equal_node(nodes, "Continue") is not None
+    if not (has_cancel and has_continue):
+        return None
+
+    combined = " ".join(ocr_node_value(node) for node in nodes).casefold()
+    combined = re.sub(r"\s+", " ", combined)
+    if not ("facebook.com" in combined and ("sign in" in combined or "wants to use" in combined)):
+        return None
+
+    for text in FACEBOOK_OAUTH_DIALOG_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            return text, node
+
+    width, height = ocr_nodes_extent(nodes)
+    return "facebook_oauth_combined", synthetic_ocr_node("facebook_oauth_dialog", width * 0.50, height * 0.50)
+
+
+def find_facebook_oauth_cancel_node(
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    node = find_bottom_value_equal_node(nodes, "Cancel")
+    if node is not None:
+        return node
+    return synthetic_ocr_node(
+        "Cancel",
+        float(width or 1290) * 0.33,
+        float(height or 2796) * 0.576,
+    )
+
+
+def find_facebook_oauth_sign_in_action(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any] | None:
+    anchor = find_facebook_oauth_sign_in_dialog_anchor(vp, nodes)
+    if anchor is None:
+        return None
+    matched_text, _ = anchor
+    return {
+        "state": "facebook_oauth_dialog",
+        "matched_text": matched_text,
+        "action_node": find_facebook_oauth_cancel_node(nodes, width=width, height=height),
+    }
+
+
+def find_profile_setup_done_action(
+    vp: VPhoneSession,
+    nodes: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any] | None:
+    # 中文注释：兜底处理“Create a profile that shows your vibe”资料页。
+    # 正常情况下这里会走头像上传流程；但有时先出现 Keep Instagram open 过渡页，
+    # 脚本可能已进入补充引导扫描，此时不能把这个资料页留在屏幕上，至少要点底部 Done 继续。
+    matched_text = ""
+    for text in PROFILE_AVATAR_PAGE_TEXTS:
+        node = find_ocr_node_by_text(vp, nodes, text)
+        if node is not None:
+            matched_text = text
+            break
+    if not matched_text:
+        return None
+
+    done_node = find_bottom_value_equal_node(nodes, "Done")
+    if done_node is None:
+        done_node = synthetic_ocr_node(
+            "Done",
+            float(width or 1290) * 0.50,
+            float(height or 2796) * 0.923,
+        )
+    return {
+        "state": "profile_avatar_done",
+        "matched_text": matched_text,
+        "action_node": done_node,
+    }
 
 
 def wait_for_profile_create_result(
@@ -1907,6 +2916,104 @@ def wait_for_profile_create_result(
                     "state": "pick_interests",
                     "matched_text": "Pick what you want to see",
                     "action_node": action_node,
+                    "nodes": nodes,
+                    "width": width,
+                    "height": height,
+                    "last_values": last_values,
+                    "error": "",
+                }
+
+            free_with_ads_action = find_free_with_ads_action(
+                vp,
+                nodes,
+                width=width,
+                height=height,
+            )
+            if free_with_ads_action is not None:
+                resp = {
+                    "ok": False,
+                    "state": free_with_ads_action["state"],
+                    "matched_text": free_with_ads_action["matched_text"],
+                    "nodes": nodes,
+                    "width": width,
+                    "height": height,
+                    "last_values": last_values,
+                    "error": "",
+                }
+                for key in ("action_node", "select_node", "use_node", "continue_node"):
+                    if key in free_with_ads_action:
+                        resp[key] = free_with_ads_action[key]
+                return resp
+
+            photos_action = find_photos_access_action(
+                vp,
+                nodes,
+                width=width,
+                height=height,
+            )
+            if photos_action is not None:
+                return {
+                    "ok": False,
+                    "state": photos_action["state"],
+                    "matched_text": photos_action["matched_text"],
+                    "action_node": photos_action["action_node"],
+                    "nodes": nodes,
+                    "width": width,
+                    "height": height,
+                    "last_values": last_values,
+                    "error": "",
+                }
+
+            contacts_action = find_contacts_access_action(
+                vp,
+                nodes,
+                width=width,
+                height=height,
+            )
+            if contacts_action is not None:
+                return {
+                    "ok": False,
+                    "state": contacts_action["state"],
+                    "matched_text": contacts_action["matched_text"],
+                    "action_node": contacts_action["action_node"],
+                    "nodes": nodes,
+                    "width": width,
+                    "height": height,
+                    "last_values": last_values,
+                    "error": "",
+                }
+
+            ads_data_action = find_ads_data_consent_action(
+                vp,
+                nodes,
+                width=width,
+                height=height,
+            )
+            if ads_data_action is not None:
+                return {
+                    "ok": False,
+                    "state": ads_data_action["state"],
+                    "matched_text": ads_data_action["matched_text"],
+                    "action_node": ads_data_action["action_node"],
+                    "nodes": nodes,
+                    "width": width,
+                    "height": height,
+                    "last_values": last_values,
+                    "error": "",
+                }
+
+            cookies_action = find_cookies_action(
+                vp,
+                nodes,
+                width=width,
+                height=height,
+            )
+            if cookies_action is not None:
+                return {
+                    "ok": False,
+                    "state": cookies_action["state"],
+                    "matched_text": cookies_action["matched_text"],
+                    "action_node": cookies_action["action_node"],
                     "nodes": nodes,
                     "width": width,
                     "height": height,
@@ -2008,7 +3115,28 @@ def wait_for_profile_create_result_after_allow(
     # 如果中间出现任意可跳过页面（右上角 Skip）或确认 Skip 弹窗，就自动点击 Skip 后继续等待资料页/首页。
     post_allow_skip_clicked = False
     post_allow_skip_count = 0
-    max_skip_pages = 12
+    post_allow_action_flags: dict[str, bool] = {
+        "free_with_ads_choice": False,
+        "free_with_ads_use_clicked": False,
+        "free_with_ads_continue_clicked": False,
+        "free_with_ads_agree": False,
+        "free_with_ads_agree_clicked": False,
+        "ad_experience_manage": False,
+        "ad_experience_ok_clicked": False,
+        "photos_access_page": False,
+        "photos_access_continue_clicked": False,
+        "photos_permission_dialog": False,
+        "photos_permission_allow_clicked": False,
+        "contacts_access": False,
+        "contacts_next_clicked": False,
+        "contacts_permission_dialog": False,
+        "contacts_permission_denied_clicked": False,
+        "ads_data_consent": False,
+        "ads_data_get_started_clicked": False,
+        "cookies_page": False,
+        "cookies_allow_all_clicked": False,
+    }
+    max_skip_pages = 20
     for _ in range(max_skip_pages + 1):
         log_start("等待创建资料结果")
         try:
@@ -2022,15 +3150,45 @@ def wait_for_profile_create_result_after_allow(
             log_done(False)
             raise
 
-        if resp.get("state") in {"skip_page", "skip_confirm", "recommended_follow", "pick_interests"}:
+        if resp.get("state") in {
+            "skip_page",
+            "skip_confirm",
+            "recommended_follow",
+            "pick_interests",
+            "free_with_ads_choice",
+            "free_with_ads_agree",
+            "ad_experience_manage",
+            "photos_access_page",
+            "photos_permission_dialog",
+            "contacts_access",
+            "contacts_permission_dialog",
+            "ads_data_consent",
+            "cookies_page",
+        }:
             log_done(True)
+            post_allow_skip_count += 1
+            state = str(resp.get("state") or "")
+
+            if state in FREE_WITH_ADS_ACTION_STATES:
+                action_result = click_free_with_ads_action(vp, resp, screen=screen)
+                resp.update(action_result)
+                for key in post_allow_action_flags:
+                    post_allow_action_flags[key] = post_allow_action_flags[key] or bool(action_result.get(key))
+                post_allow_skip_clicked = bool(action_result.get("ok"))
+                resp["post_allow_skip_clicked"] = post_allow_skip_clicked
+                resp["post_allow_skip_count"] = post_allow_skip_count
+                resp.update(post_allow_action_flags)
+                if not post_allow_skip_clicked:
+                    resp["ok"] = False
+                    resp["error"] = str(action_result.get("error") or "免费含广告链路点击失败")
+                    return resp
+                continue
+
             action_node = resp.get("action_node") or resp.get("skip_node")
             if not isinstance(action_node, dict):
                 resp["ok"] = False
                 resp["error"] = "可处理页面缺少按钮 OCR 坐标"
                 return resp
-            post_allow_skip_count += 1
-            state = str(resp.get("state") or "")
             action_value = ocr_node_value(action_node)
             if state == "skip_confirm":
                 action_name = "点击弹窗Skip"
@@ -2038,6 +3196,18 @@ def wait_for_profile_create_result_after_allow(
                 action_name = f"点击推荐关注{action_value or 'Next'}"
             elif state == "pick_interests":
                 action_name = "点击兴趣页Done"
+            elif state == "photos_access_page":
+                action_name = "点击照片权限Continue"
+            elif state == "photos_permission_dialog":
+                action_name = "点击照片权限允许完整访问"
+            elif state == "contacts_access":
+                action_name = "点击联系人页Next"
+            elif state == "contacts_permission_dialog":
+                action_name = "点击联系人权限不允许"
+            elif state == "ads_data_consent":
+                action_name = "点击广告数据Get started"
+            elif state == "cookies_page":
+                action_name = "点击允许所有Cookies"
             else:
                 action_name = "点击Skip"
             post_allow_skip_clicked = click_ocr_node_with_delay(
@@ -2046,8 +3216,27 @@ def wait_for_profile_create_result_after_allow(
                 action_name=action_name,
                 screen=screen,
             )
+            if state == "photos_access_page":
+                post_allow_action_flags["photos_access_page"] = True
+                post_allow_action_flags["photos_access_continue_clicked"] = post_allow_skip_clicked
+            elif state == "photos_permission_dialog":
+                post_allow_action_flags["photos_permission_dialog"] = True
+                post_allow_action_flags["photos_permission_allow_clicked"] = post_allow_skip_clicked
+            elif state == "contacts_access":
+                post_allow_action_flags["contacts_access"] = True
+                post_allow_action_flags["contacts_next_clicked"] = post_allow_skip_clicked
+            elif state == "contacts_permission_dialog":
+                post_allow_action_flags["contacts_permission_dialog"] = True
+                post_allow_action_flags["contacts_permission_denied_clicked"] = post_allow_skip_clicked
+            elif state == "ads_data_consent":
+                post_allow_action_flags["ads_data_consent"] = True
+                post_allow_action_flags["ads_data_get_started_clicked"] = post_allow_skip_clicked
+            elif state == "cookies_page":
+                post_allow_action_flags["cookies_page"] = True
+                post_allow_action_flags["cookies_allow_all_clicked"] = post_allow_skip_clicked
             resp["post_allow_skip_clicked"] = post_allow_skip_clicked
             resp["post_allow_skip_count"] = post_allow_skip_count
+            resp.update(post_allow_action_flags)
             if not post_allow_skip_clicked:
                 resp["ok"] = False
                 resp["error"] = f"{action_name}失败"
@@ -2057,10 +3246,11 @@ def wait_for_profile_create_result_after_allow(
         ok = bool(resp.get("ok"))
         resp["post_allow_skip_clicked"] = post_allow_skip_clicked
         resp["post_allow_skip_count"] = post_allow_skip_count
+        resp.update(post_allow_action_flags)
         log_done(ok)
         return resp
 
-    return {
+    resp = {
         "ok": False,
         "state": "post_allow_skip_loop",
         "matched_text": "Skip",
@@ -2072,6 +3262,8 @@ def wait_for_profile_create_result_after_allow(
         "post_allow_skip_count": post_allow_skip_count,
         "error": f"Allow 后可跳过页面超过最大处理次数 {max_skip_pages}",
     }
+    resp.update(post_allow_action_flags)
+    return resp
 
 
 def profile_avatar_node_from_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -2130,11 +3322,14 @@ def wait_for_album_picker(
     *,
     timeout: float = 15.0,
     interval: float = 0.5,
+    screen: bool = False,
 ) -> dict[str, Any]:
     # 中文注释：点击头像后必须确认已经进入系统相册；同一张 OCR 快照里同时有 Library 和 Done 才算成功。
+    # 如果中间插入 Instagram 照片访问说明页或 iOS 相册权限弹窗，就自动点 Continue / Allow Full Access 后继续等待。
     deadline = time.monotonic() + max(0.0, timeout)
     last_values: list[str] = []
     last_error = ""
+    handled_permission_pages = 0
     while True:
         try:
             nodes = vp.ocr.nodes(timeout=30.0)
@@ -2151,6 +3346,61 @@ def wait_for_album_picker(
                     "last_values": last_values,
                     "error": "",
                 }
+
+            width, height = ocr_nodes_extent(nodes)
+            photos_action = find_photos_access_action(
+                vp,
+                nodes,
+                width=int(width),
+                height=int(height),
+            )
+            if photos_action is not None:
+                handled_permission_pages += 1
+                if handled_permission_pages > 4:
+                    return {
+                        "ok": False,
+                        "state": "photos_permission_loop",
+                        "library_node": None,
+                        "done_node": None,
+                        "nodes": nodes,
+                        "last_values": last_values,
+                        "error": "照片权限页面处理次数过多，仍未进入相册",
+                    }
+                action_node = photos_action.get("action_node")
+                if not isinstance(action_node, dict):
+                    return {
+                        "ok": False,
+                        "state": str(photos_action.get("state") or "photos_permission"),
+                        "library_node": None,
+                        "done_node": None,
+                        "nodes": nodes,
+                        "last_values": last_values,
+                        "error": "照片权限页面缺少按钮 OCR 坐标",
+                    }
+                state = str(photos_action.get("state") or "")
+                action_name = (
+                    "点击照片权限允许完整访问"
+                    if state == "photos_permission_dialog"
+                    else "点击照片权限Continue"
+                )
+                clicked = click_ocr_node_with_delay(
+                    vp,
+                    action_node,
+                    action_name=action_name,
+                    screen=screen,
+                )
+                if not clicked:
+                    return {
+                        "ok": False,
+                        "state": state,
+                        "library_node": None,
+                        "done_node": None,
+                        "nodes": nodes,
+                        "last_values": last_values,
+                        "error": f"{action_name}失败",
+                    }
+                time.sleep(0.5)
+                continue
         except Exception as exc:
             last_error = str(exc)
 
@@ -2348,15 +3598,19 @@ def click_skip_if_present(
     # 2. Remember login info?：点右上角 Skip，不会二次确认。
     # 3. Try following 5+ people / Follow 5 or more people：点屏幕最下方 Follow，若按钮是 Next 就点 Next。
     # 4. Pick what you want to see：点屏幕最下方 Done。
+    # 5. 免费含广告链路：Use free of charge with ads -> Continue -> Agree -> OK。
     # 如果直接看到 Your story，说明已经进入首页；如果这些页面都没出现，也不算失败。
     result: dict[str, Any] = {
         "ok": True,
+        "state": "",
         "found": False,
         "clicked": False,
         "confirm_found": False,
         "confirm_clicked": False,
         "facebook_suggestions": False,
         "facebook_skip_clicked": False,
+        "facebook_oauth_dialog": False,
+        "facebook_oauth_cancel_clicked": False,
         "remember_login": False,
         "remember_skip_clicked": False,
         "recommended_follow": False,
@@ -2364,6 +3618,27 @@ def click_skip_if_present(
         "recommended_follow_action": "",
         "pick_interests": False,
         "pick_interests_done_clicked": False,
+        "profile_avatar_done_page": False,
+        "profile_avatar_done_clicked": False,
+        "free_with_ads_choice": False,
+        "free_with_ads_use_clicked": False,
+        "free_with_ads_continue_clicked": False,
+        "free_with_ads_agree": False,
+        "free_with_ads_agree_clicked": False,
+        "ad_experience_manage": False,
+        "ad_experience_ok_clicked": False,
+        "photos_access_page": False,
+        "photos_access_continue_clicked": False,
+        "photos_permission_dialog": False,
+        "photos_permission_allow_clicked": False,
+        "contacts_access": False,
+        "contacts_next_clicked": False,
+        "contacts_permission_dialog": False,
+        "contacts_permission_denied_clicked": False,
+        "ads_data_consent": False,
+        "ads_data_get_started_clicked": False,
+        "cookies_page": False,
+        "cookies_allow_all_clicked": False,
         "home": False,
         "generic_skip_count": 0,
         "last_values": [],
@@ -2425,12 +3700,55 @@ def click_skip_if_present(
                 nodes = vp.ocr.nodes(timeout=30.0)
                 last_values = [str(node.get("value") or node.get("label") or "").strip() for node in nodes]
                 if (
-                    find_ocr_node_by_text(vp, nodes, "Get Facebook suggestions") is not None
+                    find_facebook_oauth_sign_in_action(
+                        vp,
+                        nodes,
+                        width=inferred_width(nodes),
+                        height=inferred_height(nodes),
+                    ) is not None
+                    or find_facebook_suggestions_page_anchor(vp, nodes) is not None
                     or find_ocr_node_by_text(vp, nodes, "Remember login info?") is not None
                     or find_recommended_follow_page_anchor(vp, nodes) is not None
                     or find_ocr_node_by_text(vp, nodes, "Pick what you want to see") is not None
+                    or find_profile_setup_done_action(
+                        vp,
+                        nodes,
+                        width=inferred_width(nodes),
+                        height=inferred_height(nodes),
+                    ) is not None
+                    or find_free_with_ads_action(
+                        vp,
+                        nodes,
+                        width=inferred_width(nodes),
+                        height=inferred_height(nodes),
+                    ) is not None
+                    or find_photos_access_action(
+                        vp,
+                        nodes,
+                        width=inferred_width(nodes),
+                        height=inferred_height(nodes),
+                    ) is not None
+                    or find_contacts_access_action(
+                        vp,
+                        nodes,
+                        width=inferred_width(nodes),
+                        height=inferred_height(nodes),
+                    ) is not None
+                    or find_ads_data_consent_action(
+                        vp,
+                        nodes,
+                        width=inferred_width(nodes),
+                        height=inferred_height(nodes),
+                    ) is not None
+                    or find_cookies_action(
+                        vp,
+                        nodes,
+                        width=inferred_width(nodes),
+                        height=inferred_height(nodes),
+                    ) is not None
                     or find_ocr_node_by_text(vp, nodes, "Allow Instagram to access") is not None
                     or find_skip_confirm_node(vp, nodes) is not None
+                    or find_ocr_node_by_text(vp, nodes, "Please try again") is not None
                     or find_generic_top_skip_node(
                         vp,
                         nodes,
@@ -2466,11 +3784,60 @@ def click_skip_if_present(
                 ]
                 result["last_values"] = popup_last_values
 
+                oauth_action = find_facebook_oauth_sign_in_action(
+                    vp,
+                    popup_nodes,
+                    width=inferred_width(popup_nodes),
+                    height=inferred_height(popup_nodes),
+                )
+                if oauth_action is not None:
+                    action_node = oauth_action.get("action_node")
+                    if not isinstance(action_node, dict):
+                        raise LookupError("Facebook 登录确认弹窗缺少 Cancel OCR 坐标")
+                    log_done(True)
+                    cancel_clicked = click_ocr_node_with_delay(
+                        vp,
+                        action_node,
+                        action_name="点击Facebook登录弹窗Cancel",
+                        screen=screen,
+                    )
+                    result["facebook_oauth_dialog"] = True
+                    result["facebook_oauth_cancel_clicked"] = cancel_clicked
+                    if not cancel_clicked:
+                        result["ok"] = False
+                        result["error"] = "点击 Facebook 登录弹窗 Cancel 失败"
+                    else:
+                        wait_until_ocr_text_absent(
+                            vp,
+                            "facebook.com",
+                            timeout=min(max(1.0, timeout), 5.0),
+                            interval=interval,
+                        )
+                    return cancel_clicked
+
                 # 中文注释：如果已经跳到后续页面/首页，说明没有确认弹窗，直接继续后续引导处理。
                 if (
                     find_ocr_node_by_text(vp, popup_nodes, "Remember login info?") is not None
                     or find_recommended_follow_page_anchor(vp, popup_nodes) is not None
                     or find_ocr_node_by_text(vp, popup_nodes, "Pick what you want to see") is not None
+                    or find_free_with_ads_action(
+                        vp,
+                        popup_nodes,
+                        width=inferred_width(popup_nodes),
+                        height=inferred_height(popup_nodes),
+                    ) is not None
+                    or find_profile_setup_done_action(
+                        vp,
+                        popup_nodes,
+                        width=inferred_width(popup_nodes),
+                        height=inferred_height(popup_nodes),
+                    ) is not None
+                    or find_photos_access_action(
+                        vp,
+                        popup_nodes,
+                        width=inferred_width(popup_nodes),
+                        height=inferred_height(popup_nodes),
+                    ) is not None
                     or find_ocr_node_by_value_equal(popup_nodes, "Your story") is not None
                 ):
                     log_done(True)
@@ -2518,7 +3885,16 @@ def click_skip_if_present(
                 return popup_ok
             time.sleep(min(max(0.1, interval), popup_remaining))
 
-    max_pages = 8
+    # 中文注释：后续页顺序不固定，但同一类页面不能无限重试。
+    # 例如 Facebook 找人页若误点到底部 Next，会弹 iOS facebook.com 登录框；
+    # 弹框处理失败时最多尝试几次，然后退出补充处理，让账号 JSON 上报继续。
+    max_pages = 12
+    max_same_page_attempts = 3
+    facebook_suggestions_attempts = 0
+    facebook_oauth_attempts = 0
+    profile_done_attempts = 0
+    recommended_follow_attempts = 0
+    generic_skip_attempts = 0
     for _ in range(max_pages):
         nodes, last_values, last_error = wait_current_nodes("判断后续引导")
         result["last_values"] = last_values
@@ -2530,7 +3906,255 @@ def click_skip_if_present(
         try:
             if find_ocr_node_by_value_equal(nodes, "Your story") is not None:
                 result["home"] = True
+                result["state"] = "home"
                 return result
+
+            if find_ocr_node_by_text(vp, nodes, "Please try again") is not None:
+                # 中文注释：Allow and continue 后唯一硬失败条件是明确出现 Please try again。
+                result["ok"] = False
+                result["state"] = "please_try_again"
+                result["error"] = "出现 Please try again"
+                return result
+
+            facebook_oauth_action = find_facebook_oauth_sign_in_action(
+                vp,
+                nodes,
+                width=inferred_width(nodes),
+                height=inferred_height(nodes),
+            )
+            if facebook_oauth_action is not None:
+                facebook_oauth_attempts += 1
+                if facebook_oauth_attempts > max_same_page_attempts:
+                    result["state"] = "facebook_oauth_max_attempts"
+                    result["error"] = f"Facebook 登录确认弹窗处理超过最大次数 {max_same_page_attempts}"
+                    return result
+                result["found"] = True
+                action_node = facebook_oauth_action.get("action_node")
+                if not isinstance(action_node, dict):
+                    raise LookupError("Facebook 登录确认弹窗缺少 Cancel OCR 坐标")
+                cancel_clicked = click_ocr_node_with_delay(
+                    vp,
+                    action_node,
+                    action_name="点击Facebook登录弹窗Cancel",
+                    screen=screen,
+                )
+                result["clicked"] = True
+                result["facebook_oauth_dialog"] = True
+                result["facebook_oauth_cancel_clicked"] = cancel_clicked
+                if not cancel_clicked:
+                    result["ok"] = False
+                    result["error"] = "点击 Facebook 登录弹窗 Cancel 失败"
+                    return result
+                wait_until_ocr_text_absent(
+                    vp,
+                    "facebook.com",
+                    timeout=min(max(1.0, timeout), 5.0),
+                    interval=interval,
+                )
+                continue
+
+            profile_done_action = find_profile_setup_done_action(
+                vp,
+                nodes,
+                width=inferred_width(nodes),
+                height=inferred_height(nodes),
+            )
+            if profile_done_action is not None:
+                profile_done_attempts += 1
+                if profile_done_attempts > max_same_page_attempts:
+                    result["state"] = "profile_done_max_attempts"
+                    result["error"] = f"资料页 Done 处理超过最大次数 {max_same_page_attempts}"
+                    return result
+                result["found"] = True
+                action_node = profile_done_action.get("action_node")
+                if not isinstance(action_node, dict):
+                    raise LookupError("资料页缺少 Done OCR 坐标")
+                done_clicked = click_ocr_node_with_delay(
+                    vp,
+                    action_node,
+                    action_name="点击资料页Done",
+                    screen=screen,
+                )
+                result["clicked"] = True
+                result["profile_avatar_done_page"] = True
+                result["profile_avatar_done_clicked"] = done_clicked
+                result["generic_skip_count"] = int(result.get("generic_skip_count") or 0) + 1
+                if not done_clicked:
+                    result["ok"] = False
+                    result["error"] = "点击资料页 Done 失败"
+                    return result
+                wait_until_ocr_text_absent(
+                    vp,
+                    str(profile_done_action.get("matched_text") or "Create a profile that shows"),
+                    timeout=min(max(1.0, timeout), 5.0),
+                    interval=interval,
+                )
+                continue
+
+            free_with_ads_action = find_free_with_ads_action(
+                vp,
+                nodes,
+                width=inferred_width(nodes),
+                height=inferred_height(nodes),
+            )
+            if free_with_ads_action is not None:
+                result["found"] = True
+                action_result = click_free_with_ads_action(
+                    vp,
+                    free_with_ads_action,
+                    screen=screen,
+                )
+                for key in (
+                    "free_with_ads_choice",
+                    "free_with_ads_use_clicked",
+                    "free_with_ads_continue_clicked",
+                    "free_with_ads_agree",
+                    "free_with_ads_agree_clicked",
+                    "ad_experience_manage",
+                    "ad_experience_ok_clicked",
+                ):
+                    result[key] = bool(action_result.get(key))
+                result["clicked"] = True
+                result["generic_skip_count"] = int(result.get("generic_skip_count") or 0) + 1
+                if not bool(action_result.get("ok")):
+                    result["ok"] = False
+                    result["error"] = str(action_result.get("error") or "免费含广告链路点击失败")
+                    return result
+                continue
+
+            photos_action = find_photos_access_action(
+                vp,
+                nodes,
+                width=inferred_width(nodes),
+                height=inferred_height(nodes),
+            )
+            if photos_action is not None:
+                result["found"] = True
+                state = str(photos_action.get("state") or "")
+                action_node = photos_action.get("action_node")
+                if not isinstance(action_node, dict):
+                    raise LookupError("照片权限页面缺少按钮 OCR 坐标")
+                if state == "photos_permission_dialog":
+                    result["photos_permission_dialog"] = True
+                    clicked = click_ocr_node_with_delay(
+                        vp,
+                        action_node,
+                        action_name="点击照片权限允许完整访问",
+                        screen=screen,
+                    )
+                    result["photos_permission_allow_clicked"] = clicked
+                    action_desc = "照片权限允许完整访问"
+                else:
+                    result["photos_access_page"] = True
+                    clicked = click_ocr_node_with_delay(
+                        vp,
+                        action_node,
+                        action_name="点击照片权限Continue",
+                        screen=screen,
+                    )
+                    result["photos_access_continue_clicked"] = clicked
+                    action_desc = "照片权限 Continue"
+                result["clicked"] = True
+                result["generic_skip_count"] = int(result.get("generic_skip_count") or 0) + 1
+                if not clicked:
+                    result["ok"] = False
+                    result["error"] = f"点击 {action_desc} 失败"
+                    return result
+                continue
+
+            ads_data_action = find_ads_data_consent_action(
+                vp,
+                nodes,
+                width=inferred_width(nodes),
+                height=inferred_height(nodes),
+            )
+            if ads_data_action is not None:
+                result["found"] = True
+                action_node = ads_data_action.get("action_node")
+                if not isinstance(action_node, dict):
+                    raise LookupError("广告数据弹窗缺少 Get started OCR 坐标")
+                clicked = click_ocr_node_with_delay(
+                    vp,
+                    action_node,
+                    action_name="点击广告数据Get started",
+                    screen=screen,
+                )
+                result["clicked"] = True
+                result["ads_data_consent"] = True
+                result["ads_data_get_started_clicked"] = clicked
+                result["generic_skip_count"] = int(result.get("generic_skip_count") or 0) + 1
+                if not clicked:
+                    result["ok"] = False
+                    result["error"] = "点击 Get started 失败"
+                    return result
+                continue
+
+            cookies_action = find_cookies_action(
+                vp,
+                nodes,
+                width=inferred_width(nodes),
+                height=inferred_height(nodes),
+            )
+            if cookies_action is not None:
+                result["found"] = True
+                action_node = cookies_action.get("action_node")
+                if not isinstance(action_node, dict):
+                    raise LookupError("Cookies 页面缺少 Allow all cookies OCR 坐标")
+                clicked = click_ocr_node_with_delay(
+                    vp,
+                    action_node,
+                    action_name="点击允许所有Cookies",
+                    screen=screen,
+                )
+                result["clicked"] = True
+                result["cookies_page"] = True
+                result["cookies_allow_all_clicked"] = clicked
+                result["generic_skip_count"] = int(result.get("generic_skip_count") or 0) + 1
+                if not clicked:
+                    result["ok"] = False
+                    result["error"] = "点击 Allow all cookies 失败"
+                    return result
+                continue
+
+            contacts_action = find_contacts_access_action(
+                vp,
+                nodes,
+                width=inferred_width(nodes),
+                height=inferred_height(nodes),
+            )
+            if contacts_action is not None:
+                result["found"] = True
+                state = str(contacts_action.get("state") or "")
+                action_node = contacts_action.get("action_node")
+                if not isinstance(action_node, dict):
+                    raise LookupError("联系人权限页面缺少按钮 OCR 坐标")
+                if state == "contacts_permission_dialog":
+                    result["contacts_permission_dialog"] = True
+                    clicked = click_ocr_node_with_delay(
+                        vp,
+                        action_node,
+                        action_name="点击联系人权限不允许",
+                        screen=screen,
+                    )
+                    result["contacts_permission_denied_clicked"] = clicked
+                    action_desc = "联系人权限不允许"
+                else:
+                    result["contacts_access"] = True
+                    clicked = click_ocr_node_with_delay(
+                        vp,
+                        action_node,
+                        action_name="点击联系人页Next",
+                        screen=screen,
+                    )
+                    result["contacts_next_clicked"] = clicked
+                    action_desc = "联系人页 Next"
+                result["clicked"] = True
+                result["generic_skip_count"] = int(result.get("generic_skip_count") or 0) + 1
+                if not clicked:
+                    result["ok"] = False
+                    result["error"] = f"点击 {action_desc} 失败"
+                    return result
+                continue
 
             confirm_skip_node = find_skip_confirm_node(vp, nodes)
             if confirm_skip_node is not None:
@@ -2551,8 +4175,13 @@ def click_skip_if_present(
                     return result
                 continue
 
-            suggestions_node = find_ocr_node_by_text(vp, nodes, "Get Facebook suggestions")
-            if suggestions_node is not None:
+            facebook_suggestions_anchor = find_facebook_suggestions_page_anchor(vp, nodes)
+            if facebook_suggestions_anchor is not None:
+                facebook_suggestions_attempts += 1
+                if facebook_suggestions_attempts > max_same_page_attempts:
+                    result["state"] = "facebook_suggestions_max_attempts"
+                    result["error"] = f"Facebook 找人页处理超过最大次数 {max_same_page_attempts}"
+                    return result
                 result["found"] = True
                 result["facebook_suggestions"] = True
                 skip_node, _ = find_generic_top_skip_node(
@@ -2562,7 +4191,9 @@ def click_skip_if_present(
                     height=inferred_height(nodes),
                 )
                 if skip_node is None:
-                    raise LookupError("Get Facebook suggestions 页面缺少 Skip OCR 坐标")
+                    width = inferred_width(nodes)
+                    height = inferred_height(nodes)
+                    skip_node = synthetic_ocr_node("Skip", float(width) * 0.90, float(height) * 0.088)
 
                 skip_clicked = click_ocr_node_with_delay(
                     vp,
@@ -2614,6 +4245,11 @@ def click_skip_if_present(
 
             follow_anchor = find_recommended_follow_page_anchor(vp, nodes)
             if follow_anchor is not None:
+                recommended_follow_attempts += 1
+                if recommended_follow_attempts > max_same_page_attempts:
+                    result["state"] = "recommended_follow_max_attempts"
+                    result["error"] = f"推荐关注页处理超过最大次数 {max_same_page_attempts}"
+                    return result
                 matched_text, _follow_node = follow_anchor
                 result["found"] = True
                 result["recommended_follow"] = True
@@ -2680,6 +4316,11 @@ def click_skip_if_present(
                 height=inferred_height(nodes),
             )
             if top_skip_node is not None:
+                generic_skip_attempts += 1
+                if generic_skip_attempts > max_same_page_attempts:
+                    result["state"] = "generic_skip_max_attempts"
+                    result["error"] = f"通用 Skip 处理超过最大次数 {max_same_page_attempts}"
+                    return result
                 result["found"] = True
                 skip_clicked = click_ocr_node_with_delay(
                     vp,
@@ -2702,7 +4343,9 @@ def click_skip_if_present(
             return result
 
     # 中文注释：防止引导页异常循环；正常情况下不会走到这里。
-    result["ok"] = False
+    # Allow and continue 后除 Please try again 外不作为硬失败；超过轮数就停止补充处理，继续账号 JSON 上报。
+    result["ok"] = True
+    result["state"] = "post_guide_max_pages"
     result["error"] = f"后续引导处理超过最大轮数 {max_pages}"
     return result
 
@@ -2718,8 +4361,10 @@ def handle_after_login_by_ocr(
     # 中文注释：点击 Log in 后处理登录结果，最终只负责点击 Meta Horizon。
     # 1. 如果看到 Meta Horizon：随机等待后点击 Meta Horizon，并返回给主流程继续步骤 16/17/18。
     # 2. 如果同屏看到 Sign up + Try again：随机等待后点击 Try again，再随机等待后重新点击 Log in。
-    # 3. Try again -> Log in 最多循环 max_retry_loops 次。
+    # 3. 如果看到 Unable to log in 弹窗：点 OK 后重新点击 Log in。
+    # 4. 重试最多循环 max_retry_loops 次。
     try_again_count = 0
+    unable_login_ok_count = 0
     login_retry_count = 0
     last_state: dict[str, Any] | None = None
     meta_horizon_clicked = False
@@ -2743,6 +4388,7 @@ def handle_after_login_by_ocr(
                 "ok": False,
                 "state": str(state_resp.get("state") or "unknown"),
                 "try_again_count": try_again_count,
+                "unable_login_ok_count": unable_login_ok_count,
                 "login_retry_count": login_retry_count,
                 "meta_horizon_clicked": False,
                 "error": str(state_resp.get("error") or "未识别到登录后页面状态"),
@@ -2772,6 +4418,7 @@ def handle_after_login_by_ocr(
                 "ok": meta_horizon_clicked,
                 "state": "meta_horizon",
                 "try_again_count": try_again_count,
+                "unable_login_ok_count": unable_login_ok_count,
                 "login_retry_count": login_retry_count,
                 "meta_horizon_clicked": meta_horizon_clicked,
                 "full_name_candidate": full_name_candidate,
@@ -2786,6 +4433,7 @@ def handle_after_login_by_ocr(
                     "ok": False,
                     "state": "sign_up_try_again",
                     "try_again_count": try_again_count,
+                    "unable_login_ok_count": unable_login_ok_count,
                     "login_retry_count": login_retry_count,
                     "meta_horizon_clicked": False,
                     "error": f"Try again -> Log in 已达到最大循环 {max_retry_loops} 次",
@@ -2809,6 +4457,7 @@ def handle_after_login_by_ocr(
                     "ok": False,
                     "state": "sign_up_try_again",
                     "try_again_count": try_again_count,
+                    "unable_login_ok_count": unable_login_ok_count,
                     "login_retry_count": login_retry_count,
                     "meta_horizon_clicked": False,
                     "error": "点击 Try again 失败",
@@ -2830,6 +4479,68 @@ def handle_after_login_by_ocr(
                     "ok": False,
                     "state": "sign_up_try_again",
                     "try_again_count": try_again_count,
+                    "unable_login_ok_count": unable_login_ok_count,
+                    "login_retry_count": login_retry_count,
+                    "meta_horizon_clicked": False,
+                    "error": "重新点击 Log in 失败",
+                }
+            login_retry_count += 1
+            continue
+
+        if state_resp.get("state") == "unable_login_ok":
+            if unable_login_ok_count >= max(0, max_retry_loops):
+                log_start("登录重试次数")
+                log_done(False)
+                return {
+                    "ok": False,
+                    "state": "unable_login_ok",
+                    "try_again_count": try_again_count,
+                    "unable_login_ok_count": unable_login_ok_count,
+                    "login_retry_count": login_retry_count,
+                    "meta_horizon_clicked": False,
+                    "error": f"Unable to log in -> OK -> Log in 已达到最大循环 {max_retry_loops} 次",
+                }
+
+            # 中文注释：Unable to log in 弹窗是临时登录失败；点 OK 关闭弹窗，再重按 Log in。
+            random_action_delay()
+            log_start("点击登录错误OK")
+            try:
+                ok_node = state_resp.get("ok_node")
+                if not isinstance(ok_node, dict):
+                    raise LookupError("Unable to log in 弹窗缺少 OK OCR 坐标")
+                ok_resp = vp.ocr.tap(ok_node, screen=screen, delay=500)
+                ok_clicked = bool(ok_resp.get("ok"))
+            except Exception:
+                log_done(False)
+                raise
+            log_done(ok_clicked)
+            if not ok_clicked:
+                return {
+                    "ok": False,
+                    "state": "unable_login_ok",
+                    "try_again_count": try_again_count,
+                    "unable_login_ok_count": unable_login_ok_count,
+                    "login_retry_count": login_retry_count,
+                    "meta_horizon_clicked": False,
+                    "error": "点击 Unable to log in OK 失败",
+                }
+            unable_login_ok_count += 1
+
+            random_action_delay()
+            log_start("点击Log in")
+            try:
+                login_resp = click_login_button(vp, timeout=timeout, interval=interval, screen=screen)
+                login_retry_ok = bool(login_resp.get("ok"))
+            except Exception:
+                log_done(False)
+                raise
+            log_done(login_retry_ok)
+            if not login_retry_ok:
+                return {
+                    "ok": False,
+                    "state": "unable_login_ok",
+                    "try_again_count": try_again_count,
+                    "unable_login_ok_count": unable_login_ok_count,
                     "login_retry_count": login_retry_count,
                     "meta_horizon_clicked": False,
                     "error": "重新点击 Log in 失败",
@@ -2841,6 +4552,7 @@ def handle_after_login_by_ocr(
             "ok": False,
             "state": str(state_resp.get("state") or "unknown"),
             "try_again_count": try_again_count,
+            "unable_login_ok_count": unable_login_ok_count,
             "login_retry_count": login_retry_count,
             "meta_horizon_clicked": meta_horizon_clicked,
             "last_state": last_state,
@@ -2911,6 +4623,13 @@ def flow_debug_from_step19(
             "profile_create_matched_text": str(profile_create_resp.get("matched_text") or ""),
             "post_allow_skip_clicked": bool(profile_create_resp.get("post_allow_skip_clicked")),
             "post_allow_skip_count": int(profile_create_resp.get("post_allow_skip_count") or 0),
+            "post_allow_free_with_ads_choice": bool(profile_create_resp.get("free_with_ads_choice")),
+            "post_allow_free_with_ads_use_clicked": bool(profile_create_resp.get("free_with_ads_use_clicked")),
+            "post_allow_free_with_ads_continue_clicked": bool(profile_create_resp.get("free_with_ads_continue_clicked")),
+            "post_allow_free_with_ads_agree": bool(profile_create_resp.get("free_with_ads_agree")),
+            "post_allow_free_with_ads_agree_clicked": bool(profile_create_resp.get("free_with_ads_agree_clicked")),
+            "post_allow_ad_experience_manage": bool(profile_create_resp.get("ad_experience_manage")),
+            "post_allow_ad_experience_ok_clicked": bool(profile_create_resp.get("ad_experience_ok_clicked")),
             "profile_create_error": str(profile_create_resp.get("error") or ""),
             "photos_deleted": photos_deleted_ok,
             "profile_photo_imported": profile_photo_import_ok,
@@ -2933,6 +4652,8 @@ def flow_debug_from_step19(
             "skip_confirm_clicked": bool(skip_resp.get("confirm_clicked")),
             "skip_facebook_suggestions": bool(skip_resp.get("facebook_suggestions")),
             "skip_facebook_clicked": bool(skip_resp.get("facebook_skip_clicked")),
+            "skip_facebook_oauth_dialog": bool(skip_resp.get("facebook_oauth_dialog")),
+            "skip_facebook_oauth_cancel_clicked": bool(skip_resp.get("facebook_oauth_cancel_clicked")),
             "skip_remember_login": bool(skip_resp.get("remember_login")),
             "skip_remember_clicked": bool(skip_resp.get("remember_skip_clicked")),
             "recommended_follow": bool(skip_resp.get("recommended_follow")),
@@ -2940,6 +4661,23 @@ def flow_debug_from_step19(
             "recommended_follow_action": str(skip_resp.get("recommended_follow_action") or ""),
             "pick_interests": bool(skip_resp.get("pick_interests")),
             "pick_interests_done_clicked": bool(skip_resp.get("pick_interests_done_clicked")),
+            "profile_avatar_done_page": bool(skip_resp.get("profile_avatar_done_page")),
+            "profile_avatar_done_clicked": bool(skip_resp.get("profile_avatar_done_clicked")),
+            "free_with_ads_choice": bool(skip_resp.get("free_with_ads_choice")),
+            "free_with_ads_use_clicked": bool(skip_resp.get("free_with_ads_use_clicked")),
+            "free_with_ads_continue_clicked": bool(skip_resp.get("free_with_ads_continue_clicked")),
+            "free_with_ads_agree": bool(skip_resp.get("free_with_ads_agree")),
+            "free_with_ads_agree_clicked": bool(skip_resp.get("free_with_ads_agree_clicked")),
+            "ad_experience_manage": bool(skip_resp.get("ad_experience_manage")),
+            "ad_experience_ok_clicked": bool(skip_resp.get("ad_experience_ok_clicked")),
+            "contacts_access": bool(skip_resp.get("contacts_access")),
+            "contacts_next_clicked": bool(skip_resp.get("contacts_next_clicked")),
+            "contacts_permission_dialog": bool(skip_resp.get("contacts_permission_dialog")),
+            "contacts_permission_denied_clicked": bool(skip_resp.get("contacts_permission_denied_clicked")),
+            "ads_data_consent": bool(skip_resp.get("ads_data_consent")),
+            "ads_data_get_started_clicked": bool(skip_resp.get("ads_data_get_started_clicked")),
+            "cookies_page": bool(skip_resp.get("cookies_page")),
+            "cookies_allow_all_clicked": bool(skip_resp.get("cookies_allow_all_clicked")),
             "entered_home": str(profile_create_resp.get("state") or "") == "home",
             "skip_error": str(skip_resp.get("error") or ""),
         }
@@ -2995,6 +4733,7 @@ def flow_debug_from_step19(
             vp,
             timeout=ui_timeout,
             interval=ui_interval,
+            screen=screen,
         )
     except Exception:
         log_done(False)
@@ -3050,6 +4789,7 @@ def flow_debug_from_step19(
     # Remember login info? -> Skip；
     # Try following 5+ people / Follow 5 or more people -> 底部 Follow/Next；
     # Pick what you want to see -> 底部 Done；
+    # 免费含广告链路 -> Use free of charge with ads -> Continue -> Agree -> OK；
     # Your story -> 已进入首页。
     try:
         skip_resp = click_skip_if_present(
@@ -3085,6 +4825,25 @@ def flow_debug_from_step19(
         "profile_create_matched_text": str(profile_create_resp.get("matched_text") or ""),
         "post_allow_skip_clicked": bool(profile_create_resp.get("post_allow_skip_clicked")),
         "post_allow_skip_count": int(profile_create_resp.get("post_allow_skip_count") or 0),
+        "post_allow_free_with_ads_choice": bool(profile_create_resp.get("free_with_ads_choice")),
+        "post_allow_free_with_ads_use_clicked": bool(profile_create_resp.get("free_with_ads_use_clicked")),
+        "post_allow_free_with_ads_continue_clicked": bool(profile_create_resp.get("free_with_ads_continue_clicked")),
+        "post_allow_free_with_ads_agree": bool(profile_create_resp.get("free_with_ads_agree")),
+        "post_allow_free_with_ads_agree_clicked": bool(profile_create_resp.get("free_with_ads_agree_clicked")),
+        "post_allow_ad_experience_manage": bool(profile_create_resp.get("ad_experience_manage")),
+        "post_allow_ad_experience_ok_clicked": bool(profile_create_resp.get("ad_experience_ok_clicked")),
+        "post_allow_photos_access_page": bool(profile_create_resp.get("photos_access_page")),
+        "post_allow_photos_access_continue_clicked": bool(profile_create_resp.get("photos_access_continue_clicked")),
+        "post_allow_photos_permission_dialog": bool(profile_create_resp.get("photos_permission_dialog")),
+        "post_allow_photos_permission_allow_clicked": bool(profile_create_resp.get("photos_permission_allow_clicked")),
+        "post_allow_contacts_access": bool(profile_create_resp.get("contacts_access")),
+        "post_allow_contacts_next_clicked": bool(profile_create_resp.get("contacts_next_clicked")),
+        "post_allow_contacts_permission_dialog": bool(profile_create_resp.get("contacts_permission_dialog")),
+        "post_allow_contacts_permission_denied_clicked": bool(profile_create_resp.get("contacts_permission_denied_clicked")),
+        "post_allow_ads_data_consent": bool(profile_create_resp.get("ads_data_consent")),
+        "post_allow_ads_data_get_started_clicked": bool(profile_create_resp.get("ads_data_get_started_clicked")),
+        "post_allow_cookies_page": bool(profile_create_resp.get("cookies_page")),
+        "post_allow_cookies_allow_all_clicked": bool(profile_create_resp.get("cookies_allow_all_clicked")),
         "profile_create_error": str(profile_create_resp.get("error") or ""),
         "photos_deleted": photos_deleted_ok,
         "profile_photo_imported": profile_photo_import_ok,
@@ -3107,6 +4866,8 @@ def flow_debug_from_step19(
         "skip_confirm_clicked": bool(skip_resp.get("confirm_clicked")),
         "skip_facebook_suggestions": bool(skip_resp.get("facebook_suggestions")),
         "skip_facebook_clicked": bool(skip_resp.get("facebook_skip_clicked")),
+        "skip_facebook_oauth_dialog": bool(skip_resp.get("facebook_oauth_dialog")),
+        "skip_facebook_oauth_cancel_clicked": bool(skip_resp.get("facebook_oauth_cancel_clicked")),
         "skip_remember_login": bool(skip_resp.get("remember_login")),
         "skip_remember_clicked": bool(skip_resp.get("remember_skip_clicked")),
         "recommended_follow": bool(skip_resp.get("recommended_follow")),
@@ -3114,6 +4875,27 @@ def flow_debug_from_step19(
         "recommended_follow_action": str(skip_resp.get("recommended_follow_action") or ""),
         "pick_interests": bool(skip_resp.get("pick_interests")),
         "pick_interests_done_clicked": bool(skip_resp.get("pick_interests_done_clicked")),
+        "profile_avatar_done_page": bool(skip_resp.get("profile_avatar_done_page")),
+        "profile_avatar_done_clicked": bool(skip_resp.get("profile_avatar_done_clicked")),
+        "free_with_ads_choice": bool(skip_resp.get("free_with_ads_choice")),
+        "free_with_ads_use_clicked": bool(skip_resp.get("free_with_ads_use_clicked")),
+        "free_with_ads_continue_clicked": bool(skip_resp.get("free_with_ads_continue_clicked")),
+        "free_with_ads_agree": bool(skip_resp.get("free_with_ads_agree")),
+        "free_with_ads_agree_clicked": bool(skip_resp.get("free_with_ads_agree_clicked")),
+        "ad_experience_manage": bool(skip_resp.get("ad_experience_manage")),
+        "ad_experience_ok_clicked": bool(skip_resp.get("ad_experience_ok_clicked")),
+        "photos_access_page": bool(skip_resp.get("photos_access_page")),
+        "photos_access_continue_clicked": bool(skip_resp.get("photos_access_continue_clicked")),
+        "photos_permission_dialog": bool(skip_resp.get("photos_permission_dialog")),
+        "photos_permission_allow_clicked": bool(skip_resp.get("photos_permission_allow_clicked")),
+        "contacts_access": bool(skip_resp.get("contacts_access")),
+        "contacts_next_clicked": bool(skip_resp.get("contacts_next_clicked")),
+        "contacts_permission_dialog": bool(skip_resp.get("contacts_permission_dialog")),
+        "contacts_permission_denied_clicked": bool(skip_resp.get("contacts_permission_denied_clicked")),
+        "ads_data_consent": bool(skip_resp.get("ads_data_consent")),
+        "ads_data_get_started_clicked": bool(skip_resp.get("ads_data_get_started_clicked")),
+        "cookies_page": bool(skip_resp.get("cookies_page")),
+        "cookies_allow_all_clicked": bool(skip_resp.get("cookies_allow_all_clicked")),
         "entered_home": bool(skip_resp.get("home")),
         "skip_error": str(skip_resp.get("error") or ""),
     }
@@ -3129,6 +4911,8 @@ def flow_meta2ig(
     proxy_wait: float = 2.0,
     proxy_test: bool = False,
     no_restart: bool = False,
+    proxy_retry_attempts: int = 4,
+    proxy_retry_delay: float = 3.0,
     backup_before_new_device: bool = False,
     no_relaunch_after_new_device: bool = False,
     respring_after_new_device: bool = False,
@@ -3177,11 +4961,13 @@ def flow_meta2ig(
     # 步骤 3：设置代理
     log_start("设置代理")
     try:
-        proxy_resp = set_instance_proxy(
+        proxy_resp = set_instance_proxy_with_retry(
             vp,
             proxy=runtime_proxy,
             test=proxy_test,
             no_restart=no_restart,
+            attempts=proxy_retry_attempts,
+            retry_delay=proxy_retry_delay,
         )
     except Exception:
         log_done(False)
@@ -3203,7 +4989,7 @@ def flow_meta2ig(
         raise
     log_done(bool(new_device_resp.get("ok")))
 
-    # 步骤 5：只用 OCR 等待当前屏幕出现 Log in / Create new account / I already have a profile，最大等待 ui_timeout 秒。
+    # 步骤 5：只用 OCR 等待当前屏幕出现启动页 Log in / Create new account / I already have a profile，最大等待 ui_timeout 秒。
     log_start("等待Instagram入口按钮")
     try:
         entry_resp = wait_for_instagram_entry_branch(
@@ -3222,6 +5008,7 @@ def flow_meta2ig(
     # 步骤 6：根据入口按钮进入独立分支
     profile_click_ok = True
     profile_clicked = False
+    landing_login_clicked = False
     meta_account: dict[str, Any] | None = None
     username_node: dict[str, Any] | None = None
     username_input_ok = False
@@ -3232,6 +5019,7 @@ def flow_meta2ig(
         "ok": False,
         "state": "",
         "try_again_count": 0,
+        "unable_login_ok_count": 0,
         "login_retry_count": 0,
         "meta_horizon_clicked": False,
         "full_name_candidate": "",
@@ -3262,6 +5050,10 @@ def flow_meta2ig(
     final_done_clicked = False
     skip_resp: dict[str, Any] = {"ok": True, "found": False, "clicked": False, "error": ""}
     skip_check_ok = False
+    post_success_handling_error = ""
+    post_success_handling_optional_ok = True
+    post_allow_hard_failure = False
+    post_allow_hard_failure_error = ""
     report_resp: dict[str, Any] = {"ok": not report_enabled, "status": 0, "error": ""}
     report_attempted = False
     report_ok = not report_enabled
@@ -3281,6 +5073,22 @@ def flow_meta2ig(
         log_done(profile_click_ok)
         if not profile_click_ok:
             raise RuntimeError("点击 I already have a profile 失败")
+    elif entry_resp.get("branch") == "landing_login":
+        # 中文注释：适配新版启动页：Sign up / Continue without an account / Log in。
+        # 这里必须先点启动页的 Log in，后面步骤 7 才能找到 Username / Mobile number or email 输入框。
+        log_start("点击启动页Log in")
+        try:
+            login_node = entry_resp.get("login_node")
+            if not isinstance(login_node, dict):
+                raise LookupError("启动页 Log in 缺少 OCR 坐标")
+            landing_login_resp = vp.ocr.tap(login_node, screen=screen, delay=500)
+            landing_login_clicked = bool(landing_login_resp.get("ok"))
+        except Exception:
+            log_done(False)
+            raise
+        log_done(landing_login_clicked)
+        if not landing_login_clicked:
+            raise RuntimeError("点击启动页 Log in 失败")
     elif entry_resp.get("branch") == "login_or_create":
         # 中文注释：当前已经在登录表单分支；这里不做任何点击，直接进入步骤 7 查 Username。
         pass
@@ -3475,11 +5283,26 @@ def flow_meta2ig(
                 interval=ui_interval,
                 screen=screen,
             )
-        except Exception:
-            raise
+        except Exception as exc:
+            # 中文注释：Allow 后的头像/广告/联系人/cookies 等成功后链路是非关键链路。
+            # 这里失败不再中断，后续继续等待并上报账号 JSON。
+            profile_create_resp = {
+                "ok": False,
+                "state": "post_allow_exception",
+                "matched_text": "",
+                "error": str(exc),
+            }
+            post_success_handling_optional_ok = False
+            post_success_handling_error = str(exc)
+        if str(profile_create_resp.get("state") or "") == "please_try_again":
+            post_allow_hard_failure = True
+            post_allow_hard_failure_error = str(profile_create_resp.get("error") or "出现 Please try again")
+            raise RuntimeError(post_allow_hard_failure_error)
+
         profile_create_ok = bool(profile_create_resp.get("ok"))
         if not profile_create_ok:
-            raise RuntimeError(str(profile_create_resp.get("error") or "创建资料失败"))
+            post_success_handling_optional_ok = False
+            post_success_handling_error = str(profile_create_resp.get("error") or "创建资料后续链路处理失败")
         profile_avatar_flow_required = bool(profile_create_resp.get("avatar_flow_required"))
         if not profile_avatar_flow_required:
             # 中文注释：Keep Instagram open to finish 或 Allow 后一路 Skip 直接进入首页时，都没有头像设置页。
@@ -3492,12 +5315,16 @@ def flow_meta2ig(
         try:
             photos_delete_resp = vp.photos.delete_all(yes=True)
             photos_deleted_ok = bool(photos_delete_resp.get("ok"))
-        except Exception:
+        except Exception as exc:
             log_done(False)
-            raise
-        log_done(photos_deleted_ok)
+            post_success_handling_optional_ok = False
+            post_success_handling_error = f"清空相册失败: {exc}"
+            photos_deleted_ok = False
+        else:
+            log_done(photos_deleted_ok)
         if not photos_deleted_ok:
-            raise RuntimeError("清空相册失败")
+            post_success_handling_optional_ok = False
+            post_success_handling_error = post_success_handling_error or "清空相册失败"
 
     # 步骤 21：从头像素材目录随机取一张图片导入到实例相册。
     if profile_create_ok and photos_deleted_ok:
@@ -3510,27 +5337,59 @@ def flow_meta2ig(
                 album=profile_photo_album,
             )
             profile_photo_import_ok = bool(profile_photo_import_resp.get("ok"))
-        except Exception:
+        except Exception as exc:
             log_done(False)
-            raise
-        log_done(profile_photo_import_ok)
+            post_success_handling_optional_ok = False
+            post_success_handling_error = f"导入头像照片失败: {exc}"
+            profile_photo_import_ok = False
+        else:
+            log_done(profile_photo_import_ok)
         if profile_photo_import_ok:
             print(f"照片信息：{selected_profile_photo}", flush=True)
         if not profile_photo_import_ok:
-            raise RuntimeError("导入头像照片失败")
+            post_success_handling_optional_ok = False
+            post_success_handling_error = post_success_handling_error or "导入头像照片失败"
+
+    # 步骤 21.5：页面顺序不固定，导入头像期间可能插入广告/cookies/联系人/推荐关注等页。
+    # 点击头像前重新跑一次 post-allow 页面处理，确保当前仍是头像页；如果已经进首页/非头像成功页，就跳过头像上传。
+    if profile_create_ok and profile_avatar_flow_required and photos_deleted_ok and profile_photo_import_ok:
+        try:
+            refreshed_profile_resp = wait_for_profile_create_result_after_allow(
+                vp,
+                timeout=min(max(5.0, ui_timeout), 20.0),
+                interval=ui_interval,
+                screen=screen,
+            )
+        except Exception as exc:
+            post_success_handling_optional_ok = False
+            post_success_handling_error = post_success_handling_error or f"刷新头像页状态失败: {exc}"
+        else:
+            if bool(refreshed_profile_resp.get("ok")):
+                profile_create_resp = refreshed_profile_resp
+                profile_avatar_flow_required = bool(refreshed_profile_resp.get("avatar_flow_required"))
+                if not profile_avatar_flow_required:
+                    skip_check_ok = True
+            else:
+                post_success_handling_optional_ok = False
+                post_success_handling_error = post_success_handling_error or str(
+                    refreshed_profile_resp.get("error") or "刷新头像页状态失败"
+                )
 
     # 步骤 22：相册准备好后，点击屏幕中间的头像。
-    if profile_create_ok and photos_deleted_ok and profile_photo_import_ok:
+    if profile_create_ok and profile_avatar_flow_required and photos_deleted_ok and profile_photo_import_ok:
         try:
             profile_avatar_clicked = click_profile_avatar(
                 vp,
                 profile_create_resp,
                 screen=screen,
             )
-        except Exception:
-            raise
+        except Exception as exc:
+            post_success_handling_optional_ok = False
+            post_success_handling_error = f"点击头像失败: {exc}"
+            profile_avatar_clicked = False
         if not profile_avatar_clicked:
-            raise RuntimeError("点击头像失败")
+            post_success_handling_optional_ok = False
+            post_success_handling_error = post_success_handling_error or "点击头像失败"
 
     # 步骤 23：判断是否进入相册；同屏同时有 Library 和 Done 才算进入成功。
     if profile_create_ok and photos_deleted_ok and profile_photo_import_ok and profile_avatar_clicked:
@@ -3540,14 +5399,19 @@ def flow_meta2ig(
                 vp,
                 timeout=ui_timeout,
                 interval=ui_interval,
+                screen=screen,
             )
-        except Exception:
+        except Exception as exc:
             log_done(False)
-            raise
-        album_picker_ok = bool(album_picker_resp.get("ok"))
-        log_done(album_picker_ok)
+            post_success_handling_optional_ok = False
+            post_success_handling_error = f"等待进入相册失败: {exc}"
+            album_picker_ok = False
+        else:
+            album_picker_ok = bool(album_picker_resp.get("ok"))
+            log_done(album_picker_ok)
         if not album_picker_ok:
-            raise RuntimeError(str(album_picker_resp.get("error") or "未进入相册"))
+            post_success_handling_optional_ok = False
+            post_success_handling_error = post_success_handling_error or str(album_picker_resp.get("error") or "未进入相册")
 
     # 步骤 24：进入相册后，点击相册右上角 Done，触发头像上传。
     if profile_create_ok and photos_deleted_ok and profile_photo_import_ok and profile_avatar_clicked and album_picker_ok:
@@ -3558,10 +5422,13 @@ def flow_meta2ig(
                 action_name="点击相册Done",
                 screen=screen,
             )
-        except Exception:
-            raise
+        except Exception as exc:
+            post_success_handling_optional_ok = False
+            post_success_handling_error = f"点击相册 Done 失败: {exc}"
+            album_done_clicked = False
         if not album_done_clicked:
-            raise RuntimeError("点击相册 Done 失败")
+            post_success_handling_optional_ok = False
+            post_success_handling_error = post_success_handling_error or "点击相册 Done 失败"
 
     # 步骤 25：头像上传会触发网络请求；先等 30 秒自动返回资料页；超时则点 Cancel 手动返回。
     if (
@@ -3580,11 +5447,19 @@ def flow_meta2ig(
                 interval=ui_interval,
                 screen=screen,
             )
-        except Exception:
-            raise
-        avatar_upload_return_ok = bool(avatar_upload_return_resp.get("ok"))
+        except Exception as exc:
+            post_success_handling_optional_ok = False
+            post_success_handling_error = f"头像上传后返回资料页失败: {exc}"
+            avatar_upload_return_ok = False
+        else:
+            avatar_upload_return_ok = bool(avatar_upload_return_resp.get("ok"))
+        if str(avatar_upload_return_resp.get("state") or "") == "please_try_again":
+            post_allow_hard_failure = True
+            post_allow_hard_failure_error = str(avatar_upload_return_resp.get("error") or "出现 Please try again")
+            raise RuntimeError(post_allow_hard_failure_error)
         if not avatar_upload_return_ok:
-            raise RuntimeError(str(avatar_upload_return_resp.get("error") or "头像上传后未回到资料页"))
+            post_success_handling_optional_ok = False
+            post_success_handling_error = post_success_handling_error or str(avatar_upload_return_resp.get("error") or "头像上传后未回到资料页")
 
     # 步骤 26：回到资料创建页后，点击这个页面的 Done。
     if (
@@ -3603,16 +5478,20 @@ def flow_meta2ig(
                 action_name="点击资料页Done",
                 screen=screen,
             )
-        except Exception:
-            raise
+        except Exception as exc:
+            post_success_handling_optional_ok = False
+            post_success_handling_error = f"点击资料页 Done 失败: {exc}"
+            final_done_clicked = False
         if not final_done_clicked:
-            raise RuntimeError("点击资料页 Done 失败")
+            post_success_handling_optional_ok = False
+            post_success_handling_error = post_success_handling_error or "点击资料页 Done 失败"
 
     # 步骤 27：处理资料页 Done 后的引导页：
     # Get Facebook suggestions -> Skip -> 弹窗 Skip；
     # Remember login info? -> Skip；
     # Try following 5+ people / Follow 5 or more people -> 底部 Follow/Next；
     # Pick what you want to see -> 底部 Done；
+    # 免费含广告链路 -> Use free of charge with ads -> Continue -> Agree -> OK；
     # Your story -> 已进入首页。
     if (
         profile_create_ok
@@ -3631,19 +5510,100 @@ def flow_meta2ig(
                 interval=ui_interval,
                 screen=screen,
             )
-        except Exception:
-            raise
-        skip_check_ok = bool(skip_resp.get("ok"))
+        except Exception as exc:
+            post_success_handling_optional_ok = False
+            post_success_handling_error = f"处理后续引导失败: {exc}"
+            skip_resp = {"ok": False, "found": False, "clicked": False, "error": str(exc)}
+            skip_check_ok = False
+        else:
+            skip_check_ok = bool(skip_resp.get("ok"))
+        if str(skip_resp.get("state") or "") == "please_try_again":
+            post_allow_hard_failure = True
+            post_allow_hard_failure_error = str(skip_resp.get("error") or "出现 Please try again")
+            raise RuntimeError(post_allow_hard_failure_error)
         if not skip_check_ok:
-            raise RuntimeError(str(skip_resp.get("error") or "点击 Skip 失败"))
+            post_success_handling_optional_ok = False
+            post_success_handling_error = post_success_handling_error or str(skip_resp.get("error") or "点击 Skip 失败")
 
-    # 步骤 28：只要步骤 19 曾出现创建资料成功标记，就读取 /tmp/instagram_account.json 并上报账号信息。
-    if profile_create_ok and report_enabled:
+    # 步骤 27.5：Allow 后页面顺序不固定；头像页、广告授权、cookies、联系人、推荐关注等可能前后穿插。
+    # 无论上面的头像/引导处理是否成功，都再做一次非阻塞后续引导扫描；失败也不影响账号 JSON 上报。
+    if allow_and_continue_ok and not bool(skip_resp.get("home")):
+        try:
+            extra_skip_resp = click_skip_if_present(
+                vp,
+                timeout=min(max(5.0, ui_timeout), 20.0),
+                interval=ui_interval,
+                screen=screen,
+            )
+        except Exception as exc:
+            post_success_handling_optional_ok = False
+            post_success_handling_error = post_success_handling_error or f"补充处理后续引导失败: {exc}"
+        else:
+            for key in (
+                "found",
+                "clicked",
+                "confirm_found",
+                "confirm_clicked",
+                "facebook_suggestions",
+                "facebook_skip_clicked",
+                "facebook_oauth_dialog",
+                "facebook_oauth_cancel_clicked",
+                "remember_login",
+                "remember_skip_clicked",
+                "recommended_follow",
+                "recommended_follow_clicked",
+                "pick_interests",
+                "pick_interests_done_clicked",
+                "profile_avatar_done_page",
+                "profile_avatar_done_clicked",
+                "free_with_ads_choice",
+                "free_with_ads_use_clicked",
+                "free_with_ads_continue_clicked",
+                "free_with_ads_agree",
+                "free_with_ads_agree_clicked",
+                "ad_experience_manage",
+                "ad_experience_ok_clicked",
+                "photos_access_page",
+                "photos_access_continue_clicked",
+                "photos_permission_dialog",
+                "photos_permission_allow_clicked",
+                "contacts_access",
+                "contacts_next_clicked",
+                "contacts_permission_dialog",
+                "contacts_permission_denied_clicked",
+                "ads_data_consent",
+                "ads_data_get_started_clicked",
+                "cookies_page",
+                "cookies_allow_all_clicked",
+                "home",
+            ):
+                skip_resp[key] = bool(skip_resp.get(key)) or bool(extra_skip_resp.get(key))
+            if not skip_resp.get("recommended_follow_action"):
+                skip_resp["recommended_follow_action"] = str(extra_skip_resp.get("recommended_follow_action") or "")
+            skip_check_ok = bool(skip_check_ok or extra_skip_resp.get("ok"))
+            if str(extra_skip_resp.get("state") or "") == "please_try_again":
+                post_allow_hard_failure = True
+                post_allow_hard_failure_error = str(extra_skip_resp.get("error") or "出现 Please try again")
+                raise RuntimeError(post_allow_hard_failure_error)
+            if not bool(extra_skip_resp.get("ok")):
+                post_success_handling_optional_ok = False
+                post_success_handling_error = post_success_handling_error or str(
+                    extra_skip_resp.get("error") or "补充处理后续引导失败"
+                )
+
+    # 步骤 28：Allow and continue 之后都尝试读取 /tmp/instagram_account.json 并上报账号信息。
+    # 中文注释：后续头像/引导处理失败不影响这里；账号 JSON 能读到并上报成功就视为账号创建成功。
+    if allow_and_continue_ok and report_enabled:
         report_attempted = True
         random_action_delay()
         log_start("查询账号JSON")
         try:
-            remote_account_json = read_instagram_account_json(vp, path=account_json_path)
+            remote_account_json = read_instagram_account_json_with_retry(
+                vp,
+                path=account_json_path,
+                timeout=60.0,
+                interval=3.0,
+            )
             report_payload = build_secondary_account_payload(
                 remote_account_json,
                 email=str(meta_account.get("email") or "") if meta_account else "",
@@ -3670,24 +5630,19 @@ def flow_meta2ig(
             raise RuntimeError(f"上报账号信息失败: HTTP {report_resp.get('status')}")
 
     # 步骤 29：流程完成
-    profile_avatar_flow_ok = (
-        (not profile_avatar_flow_required)
-        or (
-            photos_deleted_ok
-            and profile_photo_import_ok
-            and profile_avatar_clicked
-            and album_picker_ok
-            and album_done_clicked
-            and avatar_upload_return_ok
-            and final_done_clicked
-            and skip_check_ok
-        )
+    profile_avatar_flow_ok = True
+    account_create_or_report_ok = (
+        profile_create_ok
+        or bool(report_attempted and report_ok)
+        or bool(allow_and_continue_ok and not report_enabled)
     )
+    entry_transition_ok = str(entry_resp.get("branch") or "") != "landing_login" or landing_login_clicked
     ok = (
         bool(desktop_resp.get("ok"))
         and bool(proxy_resp.get("ok"))
         and bool(new_device_resp.get("ok"))
         and bool(entry_resp.get("ok"))
+        and entry_transition_ok
         and profile_click_ok
         and username_input_ok
         and password_input_ok
@@ -3697,7 +5652,7 @@ def flow_meta2ig(
         and name_next_ok
         and username_next_ok
         and allow_and_continue_ok
-        and profile_create_ok
+        and account_create_or_report_ok
         and profile_avatar_flow_ok
         and report_ok
     )
@@ -3716,7 +5671,11 @@ def flow_meta2ig(
         "has_login": bool(entry_resp.get("has_login")),
         "has_create_new_account": bool(entry_resp.get("has_create_new_account")),
         "has_already_have_profile": bool(entry_resp.get("has_already_have_profile")),
+        "has_sign_up": bool(entry_resp.get("has_sign_up")),
+        "has_continue_without_account": bool(entry_resp.get("has_continue_without_account")),
+        "has_login_form": bool(entry_resp.get("has_login_form")),
         "already_have_profile_clicked": profile_clicked,
+        "landing_login_clicked": landing_login_clicked,
         "meta_account_id": meta_account.get("id") if meta_account else None,
         "meta_account_email": meta_account.get("email") if meta_account else None,
         "meta_account_used_at": meta_account.get("used_at") if meta_account else None,
@@ -3728,6 +5687,7 @@ def flow_meta2ig(
         "after_login_state": str(after_login_resp.get("state") or ""),
         "after_login_error": str(after_login_resp.get("error") or ""),
         "try_again_count": int(after_login_resp.get("try_again_count") or 0),
+        "unable_login_ok_count": int(after_login_resp.get("unable_login_ok_count") or 0),
         "login_retry_count": int(after_login_resp.get("login_retry_count") or 0),
         "meta_horizon_clicked": bool(after_login_resp.get("meta_horizon_clicked")),
         "name_next_clicked": name_next_ok,
@@ -3735,12 +5695,36 @@ def flow_meta2ig(
         "username_next_clicked": username_next_ok,
         "registered_username": registered_username,
         "allow_and_continue_clicked": allow_and_continue_ok,
+        "account_create_or_report_ok": account_create_or_report_ok,
         "profile_create": profile_create_ok,
         "profile_create_state": str(profile_create_resp.get("state") or ""),
         "profile_create_matched_text": str(profile_create_resp.get("matched_text") or ""),
         "profile_avatar_flow_required": profile_avatar_flow_required,
+        "post_allow_hard_failure": post_allow_hard_failure,
+        "post_allow_hard_failure_error": post_allow_hard_failure_error,
+        "post_success_handling_optional_ok": post_success_handling_optional_ok,
+        "post_success_handling_error": post_success_handling_error,
         "post_allow_skip_clicked": bool(profile_create_resp.get("post_allow_skip_clicked")),
         "post_allow_skip_count": int(profile_create_resp.get("post_allow_skip_count") or 0),
+        "post_allow_free_with_ads_choice": bool(profile_create_resp.get("free_with_ads_choice")),
+        "post_allow_free_with_ads_use_clicked": bool(profile_create_resp.get("free_with_ads_use_clicked")),
+        "post_allow_free_with_ads_continue_clicked": bool(profile_create_resp.get("free_with_ads_continue_clicked")),
+        "post_allow_free_with_ads_agree": bool(profile_create_resp.get("free_with_ads_agree")),
+        "post_allow_free_with_ads_agree_clicked": bool(profile_create_resp.get("free_with_ads_agree_clicked")),
+        "post_allow_ad_experience_manage": bool(profile_create_resp.get("ad_experience_manage")),
+        "post_allow_ad_experience_ok_clicked": bool(profile_create_resp.get("ad_experience_ok_clicked")),
+        "post_allow_photos_access_page": bool(profile_create_resp.get("photos_access_page")),
+        "post_allow_photos_access_continue_clicked": bool(profile_create_resp.get("photos_access_continue_clicked")),
+        "post_allow_photos_permission_dialog": bool(profile_create_resp.get("photos_permission_dialog")),
+        "post_allow_photos_permission_allow_clicked": bool(profile_create_resp.get("photos_permission_allow_clicked")),
+        "post_allow_contacts_access": bool(profile_create_resp.get("contacts_access")),
+        "post_allow_contacts_next_clicked": bool(profile_create_resp.get("contacts_next_clicked")),
+        "post_allow_contacts_permission_dialog": bool(profile_create_resp.get("contacts_permission_dialog")),
+        "post_allow_contacts_permission_denied_clicked": bool(profile_create_resp.get("contacts_permission_denied_clicked")),
+        "post_allow_ads_data_consent": bool(profile_create_resp.get("ads_data_consent")),
+        "post_allow_ads_data_get_started_clicked": bool(profile_create_resp.get("ads_data_get_started_clicked")),
+        "post_allow_cookies_page": bool(profile_create_resp.get("cookies_page")),
+        "post_allow_cookies_allow_all_clicked": bool(profile_create_resp.get("cookies_allow_all_clicked")),
         "profile_create_error": str(profile_create_resp.get("error") or ""),
         "photos_deleted": photos_deleted_ok,
         "profile_photo_imported": profile_photo_import_ok,
@@ -3763,6 +5747,8 @@ def flow_meta2ig(
         "skip_confirm_clicked": bool(skip_resp.get("confirm_clicked")),
         "skip_facebook_suggestions": bool(skip_resp.get("facebook_suggestions")),
         "skip_facebook_clicked": bool(skip_resp.get("facebook_skip_clicked")),
+        "skip_facebook_oauth_dialog": bool(skip_resp.get("facebook_oauth_dialog")),
+        "skip_facebook_oauth_cancel_clicked": bool(skip_resp.get("facebook_oauth_cancel_clicked")),
         "skip_remember_login": bool(skip_resp.get("remember_login")),
         "skip_remember_clicked": bool(skip_resp.get("remember_skip_clicked")),
         "recommended_follow": bool(skip_resp.get("recommended_follow")),
@@ -3770,6 +5756,27 @@ def flow_meta2ig(
         "recommended_follow_action": str(skip_resp.get("recommended_follow_action") or ""),
         "pick_interests": bool(skip_resp.get("pick_interests")),
         "pick_interests_done_clicked": bool(skip_resp.get("pick_interests_done_clicked")),
+        "profile_avatar_done_page": bool(skip_resp.get("profile_avatar_done_page")),
+        "profile_avatar_done_clicked": bool(skip_resp.get("profile_avatar_done_clicked")),
+        "free_with_ads_choice": bool(skip_resp.get("free_with_ads_choice")),
+        "free_with_ads_use_clicked": bool(skip_resp.get("free_with_ads_use_clicked")),
+        "free_with_ads_continue_clicked": bool(skip_resp.get("free_with_ads_continue_clicked")),
+        "free_with_ads_agree": bool(skip_resp.get("free_with_ads_agree")),
+        "free_with_ads_agree_clicked": bool(skip_resp.get("free_with_ads_agree_clicked")),
+        "ad_experience_manage": bool(skip_resp.get("ad_experience_manage")),
+        "ad_experience_ok_clicked": bool(skip_resp.get("ad_experience_ok_clicked")),
+        "photos_access_page": bool(skip_resp.get("photos_access_page")),
+        "photos_access_continue_clicked": bool(skip_resp.get("photos_access_continue_clicked")),
+        "photos_permission_dialog": bool(skip_resp.get("photos_permission_dialog")),
+        "photos_permission_allow_clicked": bool(skip_resp.get("photos_permission_allow_clicked")),
+        "contacts_access": bool(skip_resp.get("contacts_access")),
+        "contacts_next_clicked": bool(skip_resp.get("contacts_next_clicked")),
+        "contacts_permission_dialog": bool(skip_resp.get("contacts_permission_dialog")),
+        "contacts_permission_denied_clicked": bool(skip_resp.get("contacts_permission_denied_clicked")),
+        "ads_data_consent": bool(skip_resp.get("ads_data_consent")),
+        "ads_data_get_started_clicked": bool(skip_resp.get("ads_data_get_started_clicked")),
+        "cookies_page": bool(skip_resp.get("cookies_page")),
+        "cookies_allow_all_clicked": bool(skip_resp.get("cookies_allow_all_clicked")),
         "entered_home": bool(skip_resp.get("home")),
         "skip_error": str(skip_resp.get("error") or ""),
         "account_report_enabled": report_enabled,
@@ -3786,22 +5793,105 @@ def flow_meta2ig(
     }
 
 
+def run_selected_flow_once(vp: VPhoneSession, args: argparse.Namespace) -> dict[str, Any]:
+    # 中文注释：单轮执行入口。循环模式和非循环模式共用这里，避免两边参数列表不一致。
+    if args.debug_from_step19:
+        return flow_debug_from_step19(
+            vp,
+            ui_timeout=args.ui_timeout,
+            ui_interval=args.ui_interval,
+            profile_photo_dir=args.profile_photo_dir,
+            profile_photo_album=args.profile_photo_album,
+            screen=args.screen,
+        )
+
+    return flow_meta2ig(
+        vp,
+        proxy=args.proxy,
+        instagram_bundle_id=args.instagram_bundle_id,
+        home_repeat=args.repeat,
+        home_interval=args.interval,
+        proxy_wait=args.proxy_wait,
+        proxy_test=args.proxy_test,
+        no_restart=args.no_restart,
+        proxy_retry_attempts=args.proxy_retry_attempts,
+        proxy_retry_delay=args.proxy_retry_delay,
+        backup_before_new_device=args.backup_before_new_device,
+        no_relaunch_after_new_device=args.no_relaunch_after_new_device,
+        respring_after_new_device=args.respring_after_new_device,
+        ui_timeout=args.ui_timeout,
+        ui_interval=args.ui_interval,
+        meta_mysql_dsn=args.meta_db_dsn,
+        meta_mysql_table=args.meta_db_table,
+        focus_wait_min=args.focus_wait_min,
+        focus_wait_max=args.focus_wait_max,
+        char_delay_min=args.char_delay_min,
+        char_delay_max=args.char_delay_max,
+        login_retry_limit=args.login_retry_limit,
+        profile_photo_dir=args.profile_photo_dir,
+        profile_photo_album=args.profile_photo_album,
+        account_json_path=args.account_json_path,
+        report_url=args.report_url,
+        report_enabled=not args.no_report,
+        screen=args.screen,
+    )
+
+
+def run_loop_mode(vp: VPhoneSession, args: argparse.Namespace, *, rounds: int) -> tuple[int, int]:
+    # 中文注释：循环模式中单轮失败不退出进程，记录失败后继续下一轮，最后统一输出成功/失败次数。
+    success_count = 0
+    failure_count = 0
+    failure_details: list[tuple[int, str]] = []
+
+    for round_index in range(1, rounds + 1):
+        print(f"\n========== meta2ig 循环 {round_index}/{rounds} ==========", flush=True)
+        try:
+            result = run_selected_flow_once(vp, args)
+            ok = bool(result.get("ok"))
+            if ok:
+                success_count += 1
+                print(f"本轮结果：成功（{round_index}/{rounds}）", flush=True)
+            else:
+                failure_count += 1
+                failure_details.append((round_index, "流程返回 ok=false"))
+                print(f"本轮结果：失败（{round_index}/{rounds}，流程返回 ok=false）", flush=True)
+        except Exception as exc:
+            failure_count += 1
+            failure_details.append((round_index, str(exc)))
+            print(f"本轮结果：失败（{round_index}/{rounds}）：{exc}", file=sys.stderr, flush=True)
+
+    print(
+        f"\n循环结束：总轮数={rounds}，成功={success_count}，失败={failure_count}",
+        flush=True,
+    )
+    if failure_details:
+        print("失败详情：", flush=True)
+        for round_index, error in failure_details:
+            print(f"  - 第 {round_index} 轮：{error}", flush=True)
+
+    return success_count, failure_count
+
+
 def main() -> int:
     # 中文注释：main 只做参数解析和 Session 初始化；业务步骤全部放在 flow_meta2ig() 里顺序执行。
     parser = argparse.ArgumentParser(description="Meta to Instagram automation helpers")
     parser.add_argument("target", help="实例名或 VM 目录，例如 instagram-01")
     parser.add_argument("--transport", choices=["auto", "socket-only", "legacy"], default="auto")
+    parser.add_argument("--loop", action="store_true", help="开启循环模式；单轮失败后继续下一轮，结束后输出成功/失败次数")
+    parser.add_argument("--loop-rounds", "--rounds", type=int, default=1, help="循环轮数，默认 1；设置大于 1 会自动开启循环模式")
     parser.add_argument("--repeat", type=int, default=1, help="Home 键次数，默认 1；不确定状态可用 2")
     parser.add_argument("--interval", type=float, default=0.8, help="多次 Home 之间的间隔秒数")
     parser.add_argument("--proxy", default=DEFAULT_PROXY, help="返回桌面后设置的代理；username 占位符会随机替换成 8 位大小写字母/数字；省略 scheme 时默认按 http:// 处理")
     parser.add_argument("--proxy-wait", type=float, default=2.0, help="返回桌面后等待多少秒再设置代理")
     parser.add_argument("--proxy-test", action="store_true", help="设置代理后测试出口 IP")
     parser.add_argument("--no-restart", action="store_true", help="设置代理后不重启/刷新网络相关服务")
+    parser.add_argument("--proxy-retry-attempts", type=int, default=4, help="设置代理遇到临时 SSH 失败时最多重试次数，默认 4")
+    parser.add_argument("--proxy-retry-delay", type=float, default=3.0, help="设置代理重试基础等待秒数，默认 3.0")
     parser.add_argument("--instagram-bundle-id", default=INSTAGRAM_BUNDLE_ID, help="要执行一键新机的 Instagram bundle id")
     parser.add_argument("--backup-before-new-device", action="store_true", help="一键新机前先备份 App 状态")
     parser.add_argument("--no-relaunch-after-new-device", action="store_true", help="一键新机后不自动重新启动 App")
     parser.add_argument("--respring-after-new-device", action="store_true", help="一键新机后执行 respring")
-    parser.add_argument("--ui-timeout", type=float, default=15.0, help="OCR 等待 Log in / Create new account / I already have a profile 出现的最大秒数")
+    parser.add_argument("--ui-timeout", type=float, default=15.0, help="OCR 等待启动页 Log in / Create new account / I already have a profile 出现的最大秒数")
     parser.add_argument("--ui-wait", dest="ui_timeout", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--ui-interval", type=float, default=0.5, help="OCR 轮询间隔秒数")
     parser.add_argument("--meta-db-dsn", default=os.environ.get("IOS_METAAI_MYSQL_DSN", DEFAULT_META_MYSQL_DSN), help="Meta 账号 MySQL DSN；默认读 IOS_METAAI_MYSQL_DSN")
@@ -3820,6 +5910,14 @@ def main() -> int:
     parser.add_argument("--screen", action="store_true", help="返回桌面后带一张截图 base64")
     parser.add_argument("--artifacts", action="store_true", help="记录 businessScript runs artifacts")
     args = parser.parse_args()
+    if args.loop_rounds < 1:
+        parser.error("--loop-rounds/--rounds 必须 >= 1")
+    if args.proxy_retry_attempts < 1:
+        parser.error("--proxy-retry-attempts 必须 >= 1")
+    if args.proxy_retry_delay < 0:
+        parser.error("--proxy-retry-delay 必须 >= 0")
+    loop_rounds = args.loop_rounds
+    loop_enabled = bool(args.loop or loop_rounds > 1)
 
     try:
         with VPhoneSession(
@@ -3829,44 +5927,12 @@ def main() -> int:
             transport=args.transport,
             artifacts=args.artifacts,
         ) as vp:
-            if args.debug_from_step19:
-                flow_debug_from_step19(
-                    vp,
-                    ui_timeout=args.ui_timeout,
-                    ui_interval=args.ui_interval,
-                    profile_photo_dir=args.profile_photo_dir,
-                    profile_photo_album=args.profile_photo_album,
-                    screen=args.screen,
-                )
+            if loop_enabled:
+                _, failure_count = run_loop_mode(vp, args, rounds=loop_rounds)
+                if failure_count:
+                    return 1
             else:
-                flow_meta2ig(
-                    vp,
-                    proxy=args.proxy,
-                    instagram_bundle_id=args.instagram_bundle_id,
-                    home_repeat=args.repeat,
-                    home_interval=args.interval,
-                    proxy_wait=args.proxy_wait,
-                    proxy_test=args.proxy_test,
-                    no_restart=args.no_restart,
-                    backup_before_new_device=args.backup_before_new_device,
-                    no_relaunch_after_new_device=args.no_relaunch_after_new_device,
-                    respring_after_new_device=args.respring_after_new_device,
-                    ui_timeout=args.ui_timeout,
-                    ui_interval=args.ui_interval,
-                    meta_mysql_dsn=args.meta_db_dsn,
-                    meta_mysql_table=args.meta_db_table,
-                    focus_wait_min=args.focus_wait_min,
-                    focus_wait_max=args.focus_wait_max,
-                    char_delay_min=args.char_delay_min,
-                    char_delay_max=args.char_delay_max,
-                    login_retry_limit=args.login_retry_limit,
-                    profile_photo_dir=args.profile_photo_dir,
-                    profile_photo_album=args.profile_photo_album,
-                    account_json_path=args.account_json_path,
-                    report_url=args.report_url,
-                    report_enabled=not args.no_report,
-                    screen=args.screen,
-                )
+                run_selected_flow_once(vp, args)
     except Exception as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 1

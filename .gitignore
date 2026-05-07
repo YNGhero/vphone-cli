@@ -337,3 +337,8 @@ setup_logs/
 /app_backups
 # vphone business automation artifacts
 /scripts/businessScript/runs/
+/scripts/businessScript/log/
+/scripts/businessScript/log/**/*.png
+
+# Local reverse-engineering scratch artifacts
+/.tmp_ida_decomp/
