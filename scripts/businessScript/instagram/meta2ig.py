@@ -24,7 +24,7 @@ if str(BUSINESS_ROOT) not in sys.path:
 from vphonekit import VPhoneSession
 
 CONFIG = json.loads((Path(__file__).with_name("config.json")).read_text())
-DEFAULT_PROXY = "sbj9104335-region-Rand-sid-username-t-60:qwertyuiop@sg.arxlabs.io:3010"
+DEFAULT_PROXY = "sbj9104335-region-JP_SG_GB_VN_TH_AU_CA_KR_LA_MY_TW-sid-username-t-60:qwertyuiop@sg.arxlabs.io:3010"
 INSTAGRAM_BUNDLE_ID = CONFIG.get("bundle_id", "com.burbn.instagram")
 DEFAULT_META_MYSQL_DSN = "root:root@tcp(127.0.0.1:3306)/zeus_accounts?charset=utf8mb4&parseTime=true&loc=Local"
 DEFAULT_META_MYSQL_TABLE = "ios_metaai_accounts"
@@ -135,6 +135,83 @@ def pick_random_profile_photo(photo_dir: str | Path) -> Path:
         supported = ", ".join(sorted(SUPPORTED_PROFILE_PHOTO_EXTENSIONS))
         raise FileNotFoundError(f"头像照片目录没有可导入图片: {root}，支持格式: {supported}")
     return random.choice(images)
+
+
+def is_transient_ssh_error(error_text: str) -> bool:
+    # 中文注释：照片导入底层走 sshpass/ssh，刚清空相册或 guest 短暂忙时可能出现临时 SSH 失败。
+    text = str(error_text or "").casefold()
+    transient_markers = [
+        "permission denied",
+        "connection refused",
+        "connection reset",
+        "connection closed",
+        "operation timed out",
+        "connect timed out",
+        "timed out",
+        "ssh_exchange_identification",
+        "kex_exchange_identification",
+        "broken pipe",
+        "no route to host",
+    ]
+    return any(marker in text for marker in transient_markers)
+
+
+def wait_for_guest_ssh_ready(
+    vp: VPhoneSession,
+    *,
+    timeout: float = 20.0,
+    interval: float = 2.0,
+) -> bool:
+    # 中文注释：静默等待 root SSH 可用；不单独打日志，避免破坏“导入头像照片...ok/failed”单行动作日志。
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            proc = vp.ssh.run("echo vphone_ssh_ready", check=False, timeout=10.0)
+            stdout = proc.stdout.decode() if isinstance(proc.stdout, bytes) else str(proc.stdout or "")
+            if proc.returncode == 0 and "vphone_ssh_ready" in stdout:
+                return True
+        except Exception:
+            pass
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(max(0.2, interval), remaining))
+
+
+def import_profile_photo_with_retry(
+    vp: VPhoneSession,
+    *,
+    photo_dir: str | Path,
+    album: str,
+    attempts: int = 4,
+    retry_delay: float = 4.0,
+) -> tuple[dict[str, Any], Path]:
+    # 中文注释：头像导入底层脚本会连续 SSH 多次；遇到临时认证/连接失败时，重跑整个导入脚本更可靠。
+    selected_photo = pick_random_profile_photo(photo_dir)
+    last_error = ""
+    attempts = max(1, attempts)
+    for attempt in range(1, attempts + 1):
+        wait_for_guest_ssh_ready(
+            vp,
+            timeout=20.0 if attempt == 1 else 30.0,
+            interval=2.0,
+        )
+        try:
+            resp = vp.photos.import_photo(selected_photo, album=album)
+            if bool(resp.get("ok")):
+                resp["attempt"] = attempt
+                return resp, selected_photo
+            last_error = str(resp)
+        except Exception as exc:
+            last_error = str(exc)
+            if not is_transient_ssh_error(last_error) and attempt >= 2:
+                raise
+
+        if attempt < attempts:
+            time.sleep(retry_delay * attempt)
+
+    raise RuntimeError(f"导入头像照片失败，已重试 {attempts} 次；最后错误：{last_error}")
 
 
 def mysql_config_from_dsn(dsn: str) -> dict[str, str]:
@@ -923,13 +1000,35 @@ def click_ocr_node_with_delay(
     return ok
 
 
+def find_name_page_title_node(vp: VPhoneSession, nodes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    # 中文注释：姓名页标题 OCR 偶尔漏掉问号，所以用更宽松的标题匹配。
+    return (
+        find_ocr_node_by_text(vp, nodes, "What's your name?")
+        or find_ocr_node_by_text(vp, nodes, "What's your name")
+    )
+
+
 def page_has_name_step(vp: VPhoneSession) -> bool:
     # 中文注释：判断是否已经进入姓名页；只做一次 OCR 快照，不输出日志。
     try:
         nodes = vp.ocr.nodes(timeout=30.0)
     except Exception:
         return False
-    return find_ocr_node_by_text(vp, nodes, "What's your name?") is not None
+    if find_name_page_title_node(vp, nodes) is not None:
+        return True
+    return (
+        find_ocr_node_by_value_equal(nodes, "Name") is not None
+        and find_ocr_node_by_text(vp, nodes, "Next", exact=False, prefer_bottom=True) is not None
+    )
+
+
+def page_has_meta_horizon(vp: VPhoneSession) -> bool:
+    # 中文注释：点击账号 row 后用来判断是否还停留在 Meta Horizon 账号选择页。
+    try:
+        nodes = vp.ocr.nodes(timeout=30.0)
+    except Exception:
+        return False
+    return find_ocr_node_by_text(vp, nodes, "Meta Horizon") is not None
 
 
 def wait_for_name_step_quiet(
@@ -955,11 +1054,42 @@ def meta_horizon_row_candidates(
     meta_horizon_node: dict[str, Any],
 ) -> list[dict[str, Any]]:
     # 中文注释：Meta Horizon 登录后页面是一个账号选择 row。
-    # 直接点 “Meta Horizon” 副标题有时不会触发行点击，所以优先点同一行右侧箭头，其次点上方账号名，再兜底点副标题。
+    # 直接点 “Meta Horizon” 副标题有时不会触发行点击，所以优先点账号 row 的中间/右侧坐标，再点箭头/账号名/副标题。
     candidates: list[dict[str, Any]] = []
 
     meta_center = meta_horizon_node.get("center_pixels") if isinstance(meta_horizon_node, dict) else None
+    meta_x = float((meta_center or {}).get("x") or 0.0)
     meta_y = float((meta_center or {}).get("y") or 0.0)
+    width, _height = ocr_nodes_extent(nodes)
+
+    # 中文注释：先找 Meta Horizon 上方、同一账号 row 内的主标题，比如 “Ashlynn Wilson”，用于推导整行垂直中心。
+    account_title_candidates: list[dict[str, Any]] = []
+    for node in nodes:
+        value = str(node.get("value") or node.get("label") or "").strip()
+        center = node.get("center_pixels")
+        if not value or not isinstance(center, dict):
+            continue
+        node_y = float(center.get("y") or 0.0)
+        if not (0 < meta_y - node_y <= 120.0):
+            continue
+        if value in {"A", "OR", "Find account", "No Instagram account found", "Meta Horizon"}:
+            continue
+        if len(value) < 3:
+            continue
+        account_title_candidates.append(node)
+    account_title_candidates.sort(key=lambda node: float((node.get("center_pixels") or {}).get("y") or 0.0), reverse=True)
+
+    row_y = meta_y
+    title_center = ocr_node_center(account_title_candidates[0]) if account_title_candidates else None
+    if title_center is not None:
+        row_y = (title_center[1] + meta_y) / 2.0
+
+    # 中文注释：优先直接点账号 row 中心/右侧。用 screen.tap 发像素坐标，避免 OCR tap 点到副标题文字本身。
+    if row_y > 0:
+        candidates.append(synthetic_ocr_node("Meta Horizon row center", width * 0.50, row_y))
+        candidates.append(synthetic_ocr_node("Meta Horizon row right", width * 0.88, row_y))
+        if meta_x > 0:
+            candidates.append(synthetic_ocr_node("Meta Horizon row text center", meta_x, row_y))
 
     # 中文注释：优先找同一行的右侧 chevron “>”；排除左上返回箭头，因为它通常不在 Meta Horizon 行附近。
     chevrons = vp.ocr.filter_nodes(nodes, ">", exact=True, case_sensitive=False)
@@ -974,22 +1104,6 @@ def meta_horizon_row_candidates(
     )
     candidates.extend(chevrons)
 
-    # 中文注释：再找 Meta Horizon 上方、同一账号 row 内的主标题，比如 “Ashlynn Wilson”。
-    account_title_candidates: list[dict[str, Any]] = []
-    for node in nodes:
-        value = str(node.get("value") or node.get("label") or "").strip()
-        center = node.get("center_pixels")
-        if not value or not isinstance(center, dict):
-            continue
-        node_y = float(center.get("y") or 0.0)
-        if not (0 < meta_y - node_y <= 120.0):
-            continue
-        if value in {"A", "OR", "Find account", "No Instagram account found"}:
-            continue
-        if len(value) < 3:
-            continue
-        account_title_candidates.append(node)
-    account_title_candidates.sort(key=lambda node: float((node.get("center_pixels") or {}).get("y") or 0.0), reverse=True)
     candidates.extend(account_title_candidates)
 
     # 中文注释：最后兜底点 Meta Horizon 文本本身。
@@ -1008,6 +1122,21 @@ def meta_horizon_row_candidates(
         seen.add(key)
         unique.append(node)
     return unique
+
+
+def tap_meta_horizon_candidate(
+    vp: VPhoneSession,
+    node: dict[str, Any],
+    *,
+    screen: bool = False,
+) -> bool:
+    # 中文注释：Meta Horizon row 点击统一走 screen.tap，确保点击的是候选中心坐标，而不是 OCR 文本边界。
+    center = ocr_node_center(node)
+    if center is None:
+        return False
+    x, y = center
+    resp = vp.screen.tap(x, y, screen=screen, delay=500)
+    return bool(resp.get("ok"))
 
 
 def extract_meta_horizon_full_name(
@@ -1043,20 +1172,52 @@ def tap_meta_horizon_and_confirm(
     screen: bool = False,
 ) -> bool:
     # 中文注释：点击 Meta Horizon 账号 row，并用“姓名页出现”确认点击真的生效。
+    if page_has_name_step(vp):
+        return True
+
     meta_horizon_node = state_resp.get("meta_horizon_node")
     if not isinstance(meta_horizon_node, dict):
         raise LookupError("Meta Horizon 缺少 OCR 坐标")
 
-    nodes = state_resp.get("nodes")
-    if not isinstance(nodes, list):
-        nodes = [meta_horizon_node]
+    current_state = state_resp
+    for _attempt in range(2):
+        nodes = current_state.get("nodes")
+        current_meta_node = current_state.get("meta_horizon_node")
+        if not isinstance(current_meta_node, dict):
+            current_meta_node = meta_horizon_node
+        if not isinstance(nodes, list):
+            nodes = [current_meta_node]
 
-    for node in meta_horizon_row_candidates(vp, nodes, meta_horizon_node):
-        resp = vp.ocr.tap(node, screen=screen, delay=500)
-        if not resp.get("ok"):
-            continue
-        if wait_for_name_step_quiet(vp, timeout=4.0, interval=interval):
+        for node in meta_horizon_row_candidates(vp, nodes, current_meta_node):
+            if not tap_meta_horizon_candidate(vp, node, screen=screen):
+                continue
+            if wait_for_name_step_quiet(vp, timeout=3.0, interval=interval):
+                return True
+            # 中文注释：如果 Meta Horizon 已经消失，说明点击已触发页面跳转/加载；给姓名页更长时间出现。
+            if not page_has_meta_horizon(vp):
+                if wait_for_name_step_quiet(vp, timeout=10.0, interval=interval):
+                    return True
+                try:
+                    refreshed_nodes = vp.ocr.nodes(timeout=30.0)
+                    refreshed_state = after_login_state_from_ocr_nodes(vp, refreshed_nodes)
+                except Exception:
+                    return False
+                if refreshed_state.get("state") == "meta_horizon":
+                    current_state = refreshed_state
+                    break
+                return False
+
+        if wait_for_name_step_quiet(vp, timeout=2.0, interval=interval):
             return True
+
+        try:
+            refreshed_nodes = vp.ocr.nodes(timeout=30.0)
+            refreshed_state = after_login_state_from_ocr_nodes(vp, refreshed_nodes)
+        except Exception:
+            break
+        if refreshed_state.get("state") != "meta_horizon":
+            return wait_for_name_step_quiet(vp, timeout=8.0, interval=interval)
+        current_state = refreshed_state
 
     return False
 
@@ -1193,7 +1354,7 @@ def wait_for_name_page_state(
         try:
             nodes = vp.ocr.nodes(timeout=30.0)
             last_values = [ocr_node_value(node) for node in nodes]
-            title_node = find_ocr_node_by_text(vp, nodes, "What's your name?")
+            title_node = find_name_page_title_node(vp, nodes)
             next_node = find_ocr_node_by_text(vp, nodes, "Next", exact=False, prefer_bottom=True)
             if title_node is not None and next_node is not None:
                 return {
@@ -1619,6 +1780,19 @@ GENERIC_TOP_SKIP_PAGE_TEXTS = [
     "Remember login info?",
 ]
 
+PROFILE_AVATAR_PAGE_TEXTS = [
+    "Create a profile that shows",
+    "Add bio",
+]
+
+PROFILE_CREATE_SUCCESS_TEXTS = [
+    "Create a profile that shows",
+    "Add bio",
+    "Keep Instagram open to finish",
+]
+
+POST_ALLOW_NON_AVATAR_SUCCESS_GRACE = 8.0
+
 
 def find_generic_top_skip_page_anchor(
     vp: VPhoneSession,
@@ -1665,15 +1839,18 @@ def wait_for_profile_create_result(
     *,
     timeout: float = 15.0,
     interval: float = 0.5,
+    non_avatar_success_grace: float = 0.0,
 ) -> dict[str, Any]:
     # 中文注释：步骤 19：Allow and continue 后同时等待失败/成功页面。
     # 失败标记：Please try again。
     # 成功标记：Keep Instagram open to finish / Create a profile that shows / Add bio 任意一个。
+    # 头像流程只在 Create a profile that shows / Add bio 资料页执行；Keep Instagram open to finish 只代表创建成功。
     # 可选中间页：Allow Instagram to access / 右上角 Skip / 确认 Skip 弹窗，出现时由上层点击 Skip 后继续等待资料页或首页。
     deadline = time.monotonic() + max(0.0, timeout)
+    pending_non_avatar_success: dict[str, Any] | None = None
+    pending_non_avatar_deadline = 0.0
     last_error = ""
     last_values: list[str] = []
-    success_texts = ["Keep Instagram open to finish", "Create a profile that shows", "Add bio"]
     while True:
         try:
             nodes, width, height = ocr_snapshot_nodes(vp)
@@ -1688,6 +1865,7 @@ def wait_for_profile_create_result(
                     "width": width,
                     "height": height,
                     "last_values": last_values,
+                    "avatar_flow_required": False,
                     "error": "",
                 }
 
@@ -1768,24 +1946,40 @@ def wait_for_profile_create_result(
                     "error": "出现 Please try again",
                 }
 
-            for text in success_texts:
+            for text in PROFILE_CREATE_SUCCESS_TEXTS:
                 node = find_ocr_node_by_text(vp, nodes, text)
                 if node is not None:
-                    return {
+                    avatar_flow_required = text in PROFILE_AVATAR_PAGE_TEXTS
+                    resp = {
                         "ok": True,
-                        "state": "profile_create_success",
+                        "state": "profile_avatar_page" if avatar_flow_required else "profile_create_success",
                         "matched_text": text,
                         "nodes": nodes,
                         "width": width,
                         "height": height,
                         "last_values": last_values,
+                        "avatar_flow_required": avatar_flow_required,
                         "error": "",
                     }
+                    if avatar_flow_required or non_avatar_success_grace <= 0:
+                        return resp
+
+                    # 中文注释：Keep Instagram open to finish 有时只是成功后的过渡页；
+                    # 短暂继续观察，允许后续 Skip/头像设置页/首页接管，而不是立刻结束头像链路。
+                    if pending_non_avatar_success is None:
+                        pending_non_avatar_deadline = time.monotonic() + max(0.0, non_avatar_success_grace)
+                    pending_non_avatar_success = resp
         except Exception as exc:
             # 中文注释：单次 OCR 截图/识别失败不立刻中断，继续轮询到 timeout。
             last_error = str(exc)
 
-        remaining = deadline - time.monotonic()
+        now = time.monotonic()
+        if pending_non_avatar_success is not None:
+            remaining = pending_non_avatar_deadline - now
+            if remaining <= 0:
+                return pending_non_avatar_success
+        else:
+            remaining = deadline - now
         if remaining <= 0:
             error = f"未等待到创建资料成功/失败标记；当前文本={last_values!r}"
             if last_error:
@@ -1820,8 +2014,9 @@ def wait_for_profile_create_result_after_allow(
         try:
             resp = wait_for_profile_create_result(
                 vp,
-                timeout=timeout,
+                timeout=30.0,
                 interval=interval,
+                non_avatar_success_grace=POST_ALLOW_NON_AVATAR_SUCCESS_GRACE,
             )
         except Exception:
             log_done(False)
@@ -2002,12 +2197,11 @@ def wait_for_profile_page_done_after_avatar_upload(
     interval: float = 0.5,
 ) -> dict[str, Any]:
     # 中文注释：相册 Done 后会触发头像上传网络请求；等待回到资料创建页，并且同屏出现资料页 Done。
-    # 成功标记：Keep Instagram open to finish / Create a profile that shows / Add bio 任意一个 + Done。
+    # 成功标记：Create a profile that shows / Add bio 任意一个 + Done。
     # 失败标记：Please try again。
     deadline = time.monotonic() + max(0.0, timeout)
     last_values: list[str] = []
     last_error = ""
-    success_texts = ["Keep Instagram open to finish", "Create a profile that shows", "Add bio"]
     while True:
         try:
             nodes = vp.ocr.nodes(timeout=30.0)
@@ -2027,7 +2221,7 @@ def wait_for_profile_page_done_after_avatar_upload(
 
             done_node = find_ocr_node_by_value_equal(nodes, "Done", prefer_bottom=False)
             if done_node is not None:
-                for text in success_texts:
+                for text in PROFILE_AVATAR_PAGE_TEXTS:
                     marker_node = find_ocr_node_by_text(vp, nodes, text)
                     if marker_node is not None:
                         return {
@@ -2688,6 +2882,7 @@ def flow_debug_from_step19(
     # 步骤 19：点击 Allow and continue 后，同时等待创建资料结果：
     # Please try again = 失败；
     # Keep Instagram open to finish / Create a profile that shows / Add bio 任意一个出现 = 成功。
+    # 只有 Create a profile that shows / Add bio 才继续执行头像流程。
     try:
         profile_create_resp = wait_for_profile_create_result_after_allow(
             vp,
@@ -2700,9 +2895,9 @@ def flow_debug_from_step19(
     profile_create_ok = bool(profile_create_resp.get("ok"))
     if not profile_create_ok:
         raise RuntimeError(str(profile_create_resp.get("error") or "创建资料失败"))
-    profile_avatar_flow_required = str(profile_create_resp.get("state") or "") == "profile_create_success"
+    profile_avatar_flow_required = bool(profile_create_resp.get("avatar_flow_required"))
     if not profile_avatar_flow_required:
-        # 中文注释：调试入口也可能从 Allow 后一路自动 Skip 到首页；这种情况没有头像页，直接结束。
+        # 中文注释：Keep Instagram open to finish 或 Allow 后一路自动 Skip 到首页时，都没有头像页，直接结束。
         skip_check_ok = True
         ok = True
         log_start("流程完成")
@@ -2766,9 +2961,9 @@ def flow_debug_from_step19(
     random_action_delay()
     log_start("导入头像照片")
     try:
-        selected_profile_photo = pick_random_profile_photo(profile_photo_dir)
-        profile_photo_import_resp = vp.photos.import_photo(
-            selected_profile_photo,
+        profile_photo_import_resp, selected_profile_photo = import_profile_photo_with_retry(
+            vp,
+            photo_dir=profile_photo_dir,
             album=profile_photo_album,
         )
         profile_photo_import_ok = bool(profile_photo_import_resp.get("ok"))
@@ -3271,6 +3466,7 @@ def flow_meta2ig(
     # 步骤 19：点击 Allow and continue 后，同时等待创建资料结果：
     # Please try again = 失败；
     # Keep Instagram open to finish / Create a profile that shows / Add bio 任意一个出现 = 成功。
+    # 只有 Create a profile that shows / Add bio 才继续执行头像流程。
     if after_login_ok and name_next_ok and username_next_ok and allow_and_continue_ok:
         try:
             profile_create_resp = wait_for_profile_create_result_after_allow(
@@ -3284,9 +3480,9 @@ def flow_meta2ig(
         profile_create_ok = bool(profile_create_resp.get("ok"))
         if not profile_create_ok:
             raise RuntimeError(str(profile_create_resp.get("error") or "创建资料失败"))
-        profile_avatar_flow_required = str(profile_create_resp.get("state") or "") == "profile_create_success"
+        profile_avatar_flow_required = bool(profile_create_resp.get("avatar_flow_required"))
         if not profile_avatar_flow_required:
-            # 中文注释：Allow 后可能一路 Skip 直接进入首页；这种链路没有头像设置页，不需要执行头像流程。
+            # 中文注释：Keep Instagram open to finish 或 Allow 后一路 Skip 直接进入首页时，都没有头像设置页。
             skip_check_ok = True
 
     # 步骤 20：点击头像前，先通过 vphonekit.photos 清空实例所有相册。
@@ -3308,9 +3504,9 @@ def flow_meta2ig(
         random_action_delay()
         log_start("导入头像照片")
         try:
-            selected_profile_photo = pick_random_profile_photo(profile_photo_dir)
-            profile_photo_import_resp = vp.photos.import_photo(
-                selected_profile_photo,
+            profile_photo_import_resp, selected_profile_photo = import_profile_photo_with_retry(
+                vp,
+                photo_dir=profile_photo_dir,
                 album=profile_photo_album,
             )
             profile_photo_import_ok = bool(profile_photo_import_resp.get("ok"))
