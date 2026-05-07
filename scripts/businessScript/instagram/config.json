@@ -1,0 +1,23 @@
+{
+  "name": "instagram",
+  "bundle_id": "com.burbn.instagram",
+  "process_name": "Instagram",
+  "default_album": "VPhoneImports",
+  "coordinates": {
+    "screen_size": [1290, 2796],
+    "center": [645, 1398],
+    "feed_swipe_start": [645, 2400],
+    "feed_swipe_end": [645, 1200],
+    "already_have_profile": [645, 2580]
+  },
+  "hooks": {
+    "audit": {
+      "install_script": "scripts/install_instagram_audit_tweak_to_instance.sh",
+      "account_json": "/tmp/instagram_account.json"
+    },
+    "profile": {
+      "install_script": "scripts/install_profile_tweak_to_instance.sh",
+      "profile_dir": "/var/mobile/vphone_app_profiles"
+    }
+  }
+}

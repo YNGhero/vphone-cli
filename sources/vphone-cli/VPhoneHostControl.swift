@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import ImageIO
 
@@ -20,6 +21,9 @@ import ImageIO
 ///   {"t":"type_ascii","text":"Hello"}           → type ASCII via VM keyboard events
 ///   {"t":"type","text":"Hello"}                 → set guest clipboard
 ///   {"t":"location","lat":37.386,"lon":-122.0838,"screen":false} → set guest location
+///   {"t":"app_launch","bundle_id":"com.example.app","screen":false} → launch app
+///   {"t":"app_terminate","bundle_id":"com.example.app","screen":false} → close app
+///   {"t":"accessibility_tree","bundle_id":"com.example.app","depth":-1,"screen":false} → app AX tree
 ///   {"t":"show_window","screen":false}          → reveal hidden GUI window
 ///   {"t":"arrange_window","x":0,"y":0,"w":275,"h":550,"screen":false} → resize/move GUI
 ///   {"t":"terminate_host","screen":false}       → quit vphone-cli host process
@@ -48,6 +52,8 @@ class VPhoneHostControl {
         var ok = false
         var imageBase64: String?
         var message: String?
+        var pid: Int?
+        var payload: [String: Any]?
     }
 
     /// Screen pixel dimensions for coordinate mapping.
@@ -239,8 +245,19 @@ class VPhoneHostControl {
         while true {
             let clientFD = accept(listenFD, nil, nil)
             guard clientFD >= 0 else { break }
+            disableSigPipe(on: clientFD)
             handleClient(clientFD, controller: controller)
         }
+    }
+
+    private nonisolated static func disableSigPipe(on fd: Int32) {
+        // Automation clients may time out and close the Unix socket before a
+        // slow command (for example accessibility_tree) finishes.  Without
+        // SO_NOSIGPIPE, a later write() to that closed fd can terminate the
+        // whole vphone host process with SIGPIPE, which looks like the
+        // instance powered off after a script failure.
+        var value: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &value, socklen_t(MemoryLayout<Int32>.size))
     }
 
     private nonisolated static func handleClient(_ fd: Int32, controller: VPhoneHostControl?) {
@@ -383,7 +400,7 @@ class VPhoneHostControl {
             }
 
         case "tap":
-            guard let x = json["x"] as? Double, let y = json["y"] as? Double else {
+            guard let x = number(json["x"]), let y = number(json["y"]) else {
                 writeResponse(fd, ok: false, error: "tap requires x and y (pixel coordinates)")
                 return
             }
@@ -411,8 +428,8 @@ class VPhoneHostControl {
             writeResponse(fd, ok: result.ok, error: result.error, image: result.imageBase64)
 
         case "swipe":
-            guard let x1 = json["x1"] as? Double, let y1 = json["y1"] as? Double,
-                  let x2 = json["x2"] as? Double, let y2 = json["y2"] as? Double
+            guard let x1 = number(json["x1"]), let y1 = number(json["y1"]),
+                  let x2 = number(json["x2"]), let y2 = number(json["y2"])
             else {
                 writeResponse(fd, ok: false, error: "swipe requires x1, y1, x2, y2")
                 return
@@ -607,6 +624,130 @@ class VPhoneHostControl {
                 message: result.message
             )
 
+        case "app_launch", "launch_app":
+            guard let bundleId = json["bundle_id"] as? String ?? json["bundle"] as? String else {
+                writeResponse(fd, ok: false, error: "app_launch requires bundle_id")
+                return
+            }
+            let url = json["url"] as? String
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let controller, let ctl = controller.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+                guard ctl.guestCaps.contains("apps") else {
+                    result.error = "guest does not support app automation"
+                    return
+                }
+
+                do {
+                    result.pid = try await ctl.appLaunch(bundleId: bundleId, url: url)
+                    result.ok = true
+                    result.message = result.pid.map { "launched \(bundleId) pid=\($0)" } ?? "launched \(bundleId)"
+                    if wantScreen {
+                        try? await Task.sleep(nanoseconds: UInt64(screenDelay) * 1_000_000)
+                        result.imageBase64 = await controller.captureCompactScreenshot()
+                    }
+                } catch {
+                    result.error = "\(error)"
+                }
+            }
+
+            semaphore.wait()
+            writeResponse(
+                fd, ok: result.ok, error: result.error, image: result.imageBase64,
+                message: result.message, pid: result.pid
+            )
+
+        case "app_terminate", "terminate_app", "app_close", "close_app":
+            guard let bundleId = json["bundle_id"] as? String ?? json["bundle"] as? String else {
+                writeResponse(fd, ok: false, error: "app_terminate requires bundle_id")
+                return
+            }
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let controller, let ctl = controller.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+                guard ctl.guestCaps.contains("apps") else {
+                    result.error = "guest does not support app automation"
+                    return
+                }
+
+                do {
+                    try await ctl.appTerminate(bundleId: bundleId)
+                    result.ok = true
+                    result.message = "terminated \(bundleId)"
+                    if wantScreen {
+                        try? await Task.sleep(nanoseconds: UInt64(screenDelay) * 1_000_000)
+                        result.imageBase64 = await controller.captureCompactScreenshot()
+                    }
+                } catch {
+                    result.error = "\(error)"
+                }
+            }
+
+            semaphore.wait()
+            writeResponse(
+                fd, ok: result.ok, error: result.error, image: result.imageBase64,
+                message: result.message
+            )
+
+        case "accessibility_tree", "ui_tree":
+            let depth = Int(number(json["depth"]) ?? -1)
+            let maxNodes = Int(number(json["max_nodes"] ?? json["maxNodes"]) ?? 500)
+            let fetchTimeoutMs = Int(number(json["fetch_timeout_ms"] ?? json["fetchTimeoutMs"]) ?? 8000)
+            let bundleId = json["bundle_id"] as? String ?? json["bundle"] as? String
+            let pid = number(json["pid"]).map { Int($0) }
+
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let controller, let ctl = controller.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+                guard ctl.guestCaps.contains("accessibility_tree") else {
+                    result.error = "guest does not support accessibility_tree"
+                    return
+                }
+
+                do {
+                    result.payload = try await ctl.accessibilityTree(
+                        depth: depth,
+                        maxNodes: maxNodes,
+                        bundleId: bundleId,
+                        pid: pid,
+                        fetchTimeoutMs: fetchTimeoutMs,
+                        screenWidth: controller.screenWidth,
+                        screenHeight: controller.screenHeight
+                    )
+                    result.ok = true
+                    if wantScreen {
+                        try? await Task.sleep(nanoseconds: UInt64(screenDelay) * 1_000_000)
+                        result.imageBase64 = await controller.captureCompactScreenshot()
+                    }
+                } catch {
+                    result.error = "\(error)"
+                }
+            }
+
+            semaphore.wait()
+            writeResponse(
+                fd, ok: result.ok, error: result.error, image: result.imageBase64,
+                payload: result.payload
+            )
+
         case "install_ipa":
             guard let path = json["path"] as? String else {
                 writeResponse(fd, ok: false, error: "install_ipa requires path")
@@ -690,13 +831,19 @@ class VPhoneHostControl {
 
     private nonisolated static func writeResponse(
         _ fd: Int32, ok: Bool, path: String? = nil, error: String? = nil, image: String? = nil,
-        message: String? = nil
+        message: String? = nil, pid: Int? = nil, payload: [String: Any]? = nil
     ) {
         var dict: [String: Any] = ["ok": ok]
+        if let payload {
+            for (key, value) in payload where key != "ok" && key != "image" {
+                dict[key] = value
+            }
+        }
         if let path { dict["path"] = path }
         if let error { dict["error"] = error }
         if let image { dict["image"] = image }
         if let message { dict["msg"] = message }
+        if let pid { dict["pid"] = pid }
 
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
               var json = String(data: data, encoding: .utf8)

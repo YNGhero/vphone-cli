@@ -335,3 +335,5 @@ setup_logs/
 
 /vphone_instance.conf
 /app_backups
+# vphone business automation artifacts
+/scripts/businessScript/runs/

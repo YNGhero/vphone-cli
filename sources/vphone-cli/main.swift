@@ -1,6 +1,12 @@
 import AppKit
 import ArgumentParser
+import Darwin
 import Foundation
+
+// Automation sockets can be closed by short-lived CLI clients while the host
+// process is still writing a response.  Ignore SIGPIPE process-wide so a
+// broken pipe never terminates the VM host.
+signal(SIGPIPE, SIG_IGN)
 
 do {
     let command = try VPhoneCLI.parseAsRoot()

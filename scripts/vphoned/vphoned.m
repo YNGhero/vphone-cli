@@ -328,6 +328,8 @@ static BOOL handle_client(int fd) {
       [caps addObject:@"clipboard"];
     if (gAppsAvailable)
       [caps addObject:@"apps"];
+    if (vp_accessibility_available())
+      [caps addObject:@"accessibility_tree"];
     [caps addObject:@"url"];
     [caps addObject:@"settings"];
 

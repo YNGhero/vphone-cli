@@ -291,16 +291,23 @@ scripts/type_clipboard_ascii_to_instance.sh
 
 当前已有 host-control 命令：
 
+示例脚本位于 `scripts/businessScript/vphone_automation_example.py`；后续可在 `scripts/businessScript/<app>/` 下放置针对不同 App 的业务流程脚本，并复用该示例里的 socket / SSH helper。通用业务自动化层的分层、目录、迁移路线见 [vphone 业务自动化通用层设计](./BUSINESS_AUTOMATION_DESIGN_zh.md)。
+
 ```json
 {"t":"screenshot"}
 {"t":"tap","x":645,"y":1398}
 {"t":"swipe","x1":645,"y1":2600,"x2":645,"y2":1400,"ms":300}
 {"t":"key","name":"home"}
 {"t":"type","text":"Hello"}
+{"t":"app_launch","bundle_id":"com.example.app","screen":false}
+{"t":"app_terminate","bundle_id":"com.example.app","screen":false}
+{"t":"accessibility_tree","bundle_id":"com.example.app","max_nodes":500,"screen":false}
 {"t":"install_ipa","path":"/path/App.ipa","screen":false}
 {"t":"show_window","screen":false}
 {"t":"terminate_host","screen":false}
 ```
+
+`accessibility_tree` 不做 OCR；它由 guest `vphoned` 调用 iOS Accessibility 私有框架读取当前 App 暴露的可访问元素，并返回 `nodes/tree`、`label/value/identifier/role`、逻辑点坐标 `frame/center` 与可直接点击的截图像素坐标 `frame_pixels/center_pixels`。业务脚本优先传 `bundle_id`，再用 `scripts/businessScript/vphone.py ui find|tap-text ...` 封装查询和点击。
 
 建议新增命令：
 
@@ -314,7 +321,6 @@ scripts/type_clipboard_ascii_to_instance.sh
 | `clipboard_get` | `{"t":"clipboard_get"}` | 获取 guest 剪贴板文本。 |
 | `clipboard_set` | `{"t":"clipboard_set","text":"abc"}` | 设置 guest 剪贴板。 |
 | `app_list` | `{"t":"app_list"}` | 返回 App 列表。 |
-| `app_launch` | `{"t":"app_launch","bundle_id":"com.example.app"}` | 启动指定 App。 |
 | `import_photo` | `{"t":"import_photo","path":"/path/a.jpg"}` | 导入图片到相册。优先新增 guest `vphoned` 能力；短期可调用现有脚本。 |
 | `delete_photos` | `{"t":"delete_photos","confirm":true}` | 清空相册。优先新增 guest `vphoned` 能力，避免 UI 弹窗导致状态异常。 |
 | `reboot` | `{"t":"reboot"}` | guest 重启或 host 侧重启 VM。 |
@@ -683,7 +689,7 @@ VPhoneHostControl.swift
 VPhoneControl.swift
 ```
 
-- 命令：`open_url`、`clipboard_get`、`clipboard_set`、`app_list`、`app_launch`。
+- 命令：`open_url`、`clipboard_get`、`clipboard_set`、`app_list`；`app_launch` / `app_terminate` 已接入 host-control。
 - 验收：返回 JSON 可供批量脚本调用。
 
 **GUI-404：相册导入命令**

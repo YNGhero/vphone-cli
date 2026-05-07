@@ -174,6 +174,7 @@ class VPhoneControl {
     // MARK: - Handshake
 
     private func performHandshake(fd: Int32, attemptToken: UInt64) {
+        Self.disableSigPipe(on: fd)
         var hello: [String: Any] = ["v": Self.protocolVersion, "t": "hello"]
         if let hash = guestBinaryHash {
             hello["bin_hash"] = hash
@@ -671,11 +672,34 @@ class VPhoneControl {
 
     // MARK: - Accessibility
 
-    func accessibilityTree(depth: Int = -1) async throws -> [String: Any] {
+    func accessibilityTree(
+        depth: Int = -1,
+        maxNodes: Int = 500,
+        bundleId: String? = nil,
+        pid: Int? = nil,
+        fetchTimeoutMs: Int? = nil,
+        screenWidth: Int? = nil,
+        screenHeight: Int? = nil
+    ) async throws -> [String: Any] {
         guard guestCaps.contains("accessibility_tree") else {
             throw ControlError.unsupportedCapability("accessibility_tree")
         }
-        let (resp, _) = try await sendRequest(["t": "accessibility_tree", "depth": depth])
+        var req: [String: Any] = [
+            "t": "accessibility_tree",
+            "depth": depth,
+            "max_nodes": maxNodes,
+        ]
+        if let bundleId, !bundleId.isEmpty { req["bundle_id"] = bundleId }
+        if let pid, pid > 0 { req["pid"] = pid }
+        if let fetchTimeoutMs, fetchTimeoutMs >= 0 { req["fetch_timeout_ms"] = fetchTimeoutMs }
+        if let screenWidth, screenWidth > 0 { req["screen_width"] = screenWidth }
+        if let screenHeight, screenHeight > 0 { req["screen_height"] = screenHeight }
+
+        let (resp, _) = try await sendRequest(req)
+        if (resp["ok"] as? Bool) == false || (resp["t"] as? String) == "err" {
+            let msg = resp["msg"] as? String ?? "accessibility_tree failed"
+            throw ControlError.guestError(msg)
+        }
         return resp
     }
 
@@ -917,6 +941,13 @@ class VPhoneControl {
     }
 
     // MARK: - Framing: Length-Prefixed JSON
+
+    private nonisolated static func disableSigPipe(on fd: Int32) {
+        // The guest side can close the vsock while the host is writing a
+        // request.  Prevent SIGPIPE from terminating the vphone host process.
+        var value: Int32 = 1
+        _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &value, socklen_t(MemoryLayout<Int32>.size))
+    }
 
     @discardableResult
     private func writeMessage(fd: Int32, dict: [String: Any]) -> Bool {
