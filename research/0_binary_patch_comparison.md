@@ -130,6 +130,14 @@
 | 8   | BaseBin hooks              | `systemhook.dylib` / `launchdhook.dylib` / `libellekit.dylib` -> `/cores/` plus `/b` alias for `launchdhook.dylib` |    -    |  -  |  Y  |
 | 9   | `TweakLoader.dylib`        | Lean user-tweak loader built from source and installed to `/var/jb/usr/lib/TweakLoader.dylib`                      |    -    |  -  |  Y  |
 
+### Optional Userland Stealth Tweaks
+
+These artifacts are not part of the base firmware patch counts; they are per-instance rootless tweaks installed after boot for app-specific compatibility testing.
+
+| #   | Component                  | Build / install path                                                                                              | Purpose                                                                                                                                                         | Regular | Dev | JB  |
+| --- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-----: | :-: | :-: |
+| U-1 | `VPhoneStealthTweak.dylib` | `scripts/build_stealth_tweak.sh`; `scripts/install_stealth_tweak_to_instance.sh <instance> [bundle-id...]` installs to `/var/jb/Library/MobileSubstrate/DynamicLibraries/` | Targeted Instagram stealth hook. Stable default profile hooks Meta jailbreak exports (`METADeviceIsJailbroken`, `METADeviceAppearsJailbroken`, `IGDeviceReportWithJailbreakInfo`) and reports `jail_broken=no`; wider filesystem/debug hooks are gated behind `/tmp/vphone_stealth_wide_hooks` for debugging because broad libc hooks can trigger launch-watchdog stalls. Runtime log: `/tmp/vphone_stealth_tweak.log`. |    -    |  -  | Optional |
+
 ### CFW Installer Flow Matrix (Script-Level)
 
 | Flow Item                                     | Regular (`cfw_install.sh`)      | Dev (`cfw_install_dev.sh`) | JB (`cfw_install_jb.sh`)                      |

@@ -515,12 +515,19 @@ vphone_guest_ssh() {
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
     -o PreferredAuthentications=password
+    -o PasswordAuthentication=yes
+    -o PubkeyAuthentication=no
+    -o NumberOfPasswordPrompts=1
+    -o ConnectionAttempts=1
     -o ConnectTimeout=5
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=1
+    -o LogLevel=ERROR
     -q
     -p "$port"
     root@127.0.0.1
   )
-  sshpass -p alpine ssh "${ssh_args[@]}" "$@"
+  sshpass -p "${VPHONE_SSH_PASSWORD:-alpine}" ssh "${ssh_args[@]}" "$@"
 }
 
 vphone_guest_update_plist_file() {

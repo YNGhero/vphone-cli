@@ -71,12 +71,20 @@ SSH_OPTS=(
   -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null
   -o PreferredAuthentications=password
+  -o PasswordAuthentication=yes
+  -o PubkeyAuthentication=no
+  -o NumberOfPasswordPrompts=1
+  -o ConnectionAttempts=1
+  -o ConnectTimeout=8
+  -o ServerAliveInterval=5
+  -o ServerAliveCountMax=1
+  -o LogLevel=ERROR
   -p "$SSH_PORT"
   root@127.0.0.1
 )
 
 remote_db_exists() {
-  sshpass -p alpine ssh "${SSH_OPTS[@]}" '[ -f /var/mobile/Media/PhotoData/Photos.sqlite ] && echo yes || echo no' 2>/dev/null | tail -1
+  sshpass -p "$VPA_SSH_PASSWORD" ssh "${SSH_OPTS[@]}" '[ -f /var/mobile/Media/PhotoData/Photos.sqlite ] && echo yes || echo no' 2>/dev/null | tail -1
 }
 
 # If a previous hard-reset removed Photos.sqlite, rebuild a valid empty schema by
@@ -96,7 +104,7 @@ PY
 fi
 
 echo "[*] purging guest Photos assets on SSH port ${SSH_PORT}"
-sshpass -p alpine ssh "${SSH_OPTS[@]}" '/var/jb/usr/bin/bash -s' <<'REMOTE'
+sshpass -p "$VPA_SSH_PASSWORD" ssh "${SSH_OPTS[@]}" '/var/jb/usr/bin/bash -s' <<'REMOTE'
 set -euo pipefail
 export PATH=/var/jb/usr/bin:/var/jb/bin:/var/jb/sbin:/var/jb/usr/sbin:/iosbinpack64/usr/bin:/iosbinpack64/bin:/usr/bin:/bin:/sbin:/usr/sbin:/iosbinpack64/sbin:/iosbinpack64/usr/sbin
 

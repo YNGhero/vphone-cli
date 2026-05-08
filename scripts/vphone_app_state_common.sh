@@ -12,6 +12,8 @@ VPA_GUEST_SCRIPT="${PROJECT_ROOT}/scripts/vphone_app_state_guest.sh"
 VPA_BACKUP_ROOT="${VPHONE_APP_BACKUP_ROOT:-${PROJECT_ROOT}/app_backups}"
 VPA_SSH_PASSWORD="${VPHONE_SSH_PASSWORD:-alpine}"
 VPA_HOST="${VPHONE_SSH_HOST:-127.0.0.1}"
+VPA_SSH_ATTEMPTS="${VPHONE_SSH_ATTEMPTS:-3}"
+VPA_SSH_RETRY_DELAY="${VPHONE_SSH_RETRY_DELAY:-1.5}"
 
 vpa_say() { print -r -- "[*] $*"; }
 vpa_ok() { print -r -- "[+] $*"; }
@@ -55,7 +57,14 @@ vpa_ssh() {
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
     -o PreferredAuthentications=password
+    -o PasswordAuthentication=yes
+    -o PubkeyAuthentication=no
+    -o NumberOfPasswordPrompts=1
+    -o ConnectionAttempts=1
     -o ConnectTimeout=8
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=1
+    -o LogLevel=ERROR
     -p "$port"
     "root@${VPA_HOST}"
   )
@@ -67,12 +76,78 @@ vpa_ssh() {
   fi
 }
 
+vpa_is_transient_ssh_error() {
+  local text="${1:l}"
+  [[ "$text" == *"permission denied, please try again"* ]] && return 0
+  [[ "$text" == *"permission denied (publickey,password)"* ]] && return 0
+  [[ "$text" == *"connection refused"* ]] && return 0
+  [[ "$text" == *"connection reset"* ]] && return 0
+  [[ "$text" == *"connection closed"* ]] && return 0
+  [[ "$text" == *"operation timed out"* ]] && return 0
+  [[ "$text" == *"connect timed out"* ]] && return 0
+  [[ "$text" == *"timed out"* ]] && return 0
+  [[ "$text" == *"ssh_exchange_identification"* ]] && return 0
+  [[ "$text" == *"kex_exchange_identification"* ]] && return 0
+  [[ "$text" == *"broken pipe"* ]] && return 0
+  [[ "$text" == *"no route to host"* ]] && return 0
+  return 1
+}
+
+vpa_retry_sleep() {
+  local attempt="$1"
+  python3 - "$attempt" "$VPA_SSH_RETRY_DELAY" <<'PY'
+import random
+import sys
+attempt = max(1, int(sys.argv[1]))
+base = max(0.0, float(sys.argv[2]))
+print(f"{base * attempt + random.uniform(0.2, 0.8):.3f}")
+PY
+}
+
+vpa_wait_ssh_ready() {
+  local port="$1"
+  local timeout="${2:-20}"
+  local interval="${3:-1.5}"
+  local timeout_int="${timeout%.*}"
+  [[ "$timeout_int" == <-> ]] || timeout_int=20
+  local deadline=$(( $(date +%s) + timeout_int ))
+  while true; do
+    if vpa_ssh "$port" "echo vphone_ssh_ready" >/dev/null 2>&1; then
+      return 0
+    fi
+    (( $(date +%s) >= deadline )) && return 1
+    sleep "$interval"
+  done
+}
+
 vpa_run_guest() {
   local port="$1"
   shift
   local args
   args="$(vpa_quote_args "$@")"
-  vpa_ssh "$port" "if [ -x /var/jb/usr/bin/bash ]; then /var/jb/usr/bin/bash -s -- ${args}; else /bin/bash -s -- ${args}; fi" < "$VPA_GUEST_SCRIPT"
+  local attempt max_attempts rc err_file err_text
+  max_attempts="$VPA_SSH_ATTEMPTS"
+  [[ "$max_attempts" == <-> && "$max_attempts" -ge 1 ]] || max_attempts=3
+  err_file="$(mktemp "${TMPDIR:-/tmp}/vpa-ssh.XXXXXX")"
+  for (( attempt = 1; attempt <= max_attempts; attempt++ )); do
+    : > "$err_file"
+    if vpa_ssh "$port" "if [ -x /var/jb/usr/bin/bash ]; then /var/jb/usr/bin/bash -s -- ${args}; else /bin/bash -s -- ${args}; fi" < "$VPA_GUEST_SCRIPT" 2>"$err_file"; then
+      rm -f "$err_file"
+      return 0
+    fi
+    rc=$?
+    err_text="$(cat "$err_file" 2>/dev/null || true)"
+    if (( attempt < max_attempts )) && vpa_is_transient_ssh_error "$err_text"; then
+      vpa_warn "transient SSH failure on localhost:${port}; retry ${attempt}/${max_attempts}"
+      sleep "$(vpa_retry_sleep "$attempt")"
+      continue
+    fi
+    cat "$err_file" >&2 2>/dev/null || true
+    rm -f "$err_file"
+    return "$rc"
+  done
+  rm -f "$err_file"
+  return 1
 }
 
 vpa_prompt_confirm() {

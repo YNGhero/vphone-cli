@@ -116,11 +116,18 @@ try_halt_guest() {
   command -v sshpass >/dev/null 2>&1 || return 1
 
   say "requesting guest halt over SSH localhost:${port}"
-  sshpass -p alpine ssh \
+  sshpass -p "${VPHONE_SSH_PASSWORD:-alpine}" ssh \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
     -o PreferredAuthentications=password \
+    -o PasswordAuthentication=yes \
+    -o PubkeyAuthentication=no \
+    -o NumberOfPasswordPrompts=1 \
+    -o ConnectionAttempts=1 \
     -o ConnectTimeout=3 \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=1 \
+    -o LogLevel=ERROR \
     -q -p "$port" root@127.0.0.1 \
     "PATH=/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin:/usr/sbin:/sbin:/iosbinpack64/usr/bin:/iosbinpack64/bin:\$PATH; halt || shutdown -h now" \
     >/dev/null 2>&1 || return 1

@@ -564,7 +564,14 @@ wait_for_ssh() {
       -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
       -o PreferredAuthentications=password \
+      -o PasswordAuthentication=yes \
+      -o PubkeyAuthentication=no \
+      -o NumberOfPasswordPrompts=1 \
+      -o ConnectionAttempts=1 \
       -o ConnectTimeout=3 \
+      -o ServerAliveInterval=5 \
+      -o ServerAliveCountMax=1 \
+      -o LogLevel=ERROR \
       -q -p "$SSH_LOCAL_PORT" root@127.0.0.1 'echo ready' >/dev/null 2>&1; then
       ok "SSH ready"
       return 0
@@ -586,7 +593,7 @@ Native GUI/control socket:
   ${VM_DIR_ABS}/vphone.sock
 
 SSH:
-  sshpass -p alpine ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${SSH_LOCAL_PORT} root@127.0.0.1
+  sshpass -p alpine ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 -o LogLevel=ERROR -p ${SSH_LOCAL_PORT} root@127.0.0.1
   Double-click helper: ${VM_DIR_ABS}/connect_ssh.command
 
 VNC:
@@ -611,6 +618,14 @@ set -euo pipefail
 exec sshpass -p alpine ssh -tt \\
   -o StrictHostKeyChecking=no \\
   -o UserKnownHostsFile=/dev/null \\
+  -o PreferredAuthentications=password \\
+  -o PasswordAuthentication=yes \\
+  -o PubkeyAuthentication=no \\
+  -o NumberOfPasswordPrompts=1 \\
+  -o ConnectionAttempts=1 \\
+  -o ServerAliveInterval=5 \\
+  -o ServerAliveCountMax=1 \\
+  -o LogLevel=ERROR \\
   -p ${SSH_LOCAL_PORT} root@127.0.0.1
 EOF
   chmod +x "${VM_DIR_ABS}/connect_ssh.command"
@@ -683,7 +698,7 @@ main() {
   print -r -- ""
   if [[ "${VPHONE_VARIANT:-}" == "jb" ]]; then
     print -r -- "TrollStore/Sileo first-boot progress:"
-    print -r -- "  sshpass -p alpine ssh -p ${SSH_LOCAL_PORT} root@127.0.0.1 'tail -f /var/log/vphone_jb_setup.log'"
+    print -r -- "  sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 -o LogLevel=ERROR -p ${SSH_LOCAL_PORT} root@127.0.0.1 'tail -f /var/log/vphone_jb_setup.log'"
   fi
   close_terminal_on_success_if_requested
 }

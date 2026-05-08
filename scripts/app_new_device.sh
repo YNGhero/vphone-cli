@@ -75,6 +75,7 @@ fi
 
 STAGE="$(vpa_default_stage new "$BUNDLE_ID")"
 vpa_say "new-device app: ${BUNDLE_ID} via SSH localhost:${SSH_PORT}"
+vpa_wait_ssh_ready "$SSH_PORT" 20 1.5 >/dev/null || vpa_warn "SSH readiness probe timed out; continuing with guarded retry"
 vpa_run_guest "$SSH_PORT" new "$BUNDLE_ID" "$STAGE" "$CLEAN_PASTEBOARD" "$RELAUNCH" "$RESPRING"
 
 if [[ "${VPHONE_APP_KEEP_STAGE:-0}" != "1" ]]; then

@@ -146,15 +146,37 @@ def reset_app_new_device(
     backup_before: bool = False,
     relaunch: bool = True,
     respring: bool = False,
+    attempts: int = 4,
+    retry_delay: float = 3.0,
 ) -> dict[str, Any]:
     # 中文注释：对指定 App 执行一键新机。这里默认 yes=True，避免业务流程中断等待确认。
-    return vp.app_state.new_device(
-        bundle_id,
-        yes=True,
-        backup_before=backup_before,
-        relaunch=relaunch,
-        respring=respring,
-    )
+    attempts = max(1, attempts)
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        # 中文注释：设置代理会刷新网络配置；紧接着跑 app_new_device 时 SSH 转发偶发认证失败。
+        # 这里要求 guest SSH 先恢复，再对整个一键新机脚本做瞬时 SSH 错误重试。
+        wait_for_guest_ssh_ready(
+            vp,
+            timeout=20.0 if attempt == 1 else 30.0,
+            interval=1.5,
+        )
+        try:
+            resp = vp.app_state.new_device(
+                bundle_id,
+                yes=True,
+                backup_before=backup_before,
+                relaunch=relaunch,
+                respring=respring,
+            )
+            resp["attempt"] = attempt
+            return resp
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt >= attempts or not is_transient_ssh_error(last_error):
+                raise
+            time.sleep((retry_delay * attempt) + random.uniform(0.2, 1.2))
+
+    raise RuntimeError(f"Instagram一键新机失败，已重试 {attempts} 次；最后错误：{last_error}")
 
 
 def pick_random_profile_photo(photo_dir: str | Path) -> Path:
@@ -4913,6 +4935,8 @@ def flow_meta2ig(
     no_restart: bool = False,
     proxy_retry_attempts: int = 4,
     proxy_retry_delay: float = 3.0,
+    new_device_retry_attempts: int = 4,
+    new_device_retry_delay: float = 3.0,
     backup_before_new_device: bool = False,
     no_relaunch_after_new_device: bool = False,
     respring_after_new_device: bool = False,
@@ -4983,6 +5007,8 @@ def flow_meta2ig(
             backup_before=backup_before_new_device,
             relaunch=not no_relaunch_after_new_device,
             respring=respring_after_new_device,
+            attempts=new_device_retry_attempts,
+            retry_delay=new_device_retry_delay,
         )
     except Exception:
         log_done(False)
@@ -5816,6 +5842,8 @@ def run_selected_flow_once(vp: VPhoneSession, args: argparse.Namespace) -> dict[
         no_restart=args.no_restart,
         proxy_retry_attempts=args.proxy_retry_attempts,
         proxy_retry_delay=args.proxy_retry_delay,
+        new_device_retry_attempts=args.new_device_retry_attempts,
+        new_device_retry_delay=args.new_device_retry_delay,
         backup_before_new_device=args.backup_before_new_device,
         no_relaunch_after_new_device=args.no_relaunch_after_new_device,
         respring_after_new_device=args.respring_after_new_device,
@@ -5888,6 +5916,8 @@ def main() -> int:
     parser.add_argument("--proxy-retry-attempts", type=int, default=4, help="设置代理遇到临时 SSH 失败时最多重试次数，默认 4")
     parser.add_argument("--proxy-retry-delay", type=float, default=3.0, help="设置代理重试基础等待秒数，默认 3.0")
     parser.add_argument("--instagram-bundle-id", default=INSTAGRAM_BUNDLE_ID, help="要执行一键新机的 Instagram bundle id")
+    parser.add_argument("--new-device-retry-attempts", type=int, default=4, help="一键新机遇到临时 SSH 失败时最多重试次数，默认 4")
+    parser.add_argument("--new-device-retry-delay", type=float, default=3.0, help="一键新机重试基础等待秒数，默认 3.0")
     parser.add_argument("--backup-before-new-device", action="store_true", help="一键新机前先备份 App 状态")
     parser.add_argument("--no-relaunch-after-new-device", action="store_true", help="一键新机后不自动重新启动 App")
     parser.add_argument("--respring-after-new-device", action="store_true", help="一键新机后执行 respring")
@@ -5916,6 +5946,10 @@ def main() -> int:
         parser.error("--proxy-retry-attempts 必须 >= 1")
     if args.proxy_retry_delay < 0:
         parser.error("--proxy-retry-delay 必须 >= 0")
+    if args.new_device_retry_attempts < 1:
+        parser.error("--new-device-retry-attempts 必须 >= 1")
+    if args.new_device_retry_delay < 0:
+        parser.error("--new-device-retry-delay 必须 >= 0")
     loop_rounds = args.loop_rounds
     loop_enabled = bool(args.loop or loop_rounds > 1)
 

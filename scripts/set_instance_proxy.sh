@@ -185,10 +185,13 @@ guest_ssh() {
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
     -o PreferredAuthentications=password
+    -o PasswordAuthentication=yes
     -o PubkeyAuthentication=no
     -o NumberOfPasswordPrompts=1
-    -o ConnectionAttempts=3
+    -o ConnectionAttempts=1
     -o ConnectTimeout=8
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=1
     -o LogLevel=ERROR
     -p "$SSH_PORT"
     root@127.0.0.1
